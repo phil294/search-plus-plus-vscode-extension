@@ -1,0 +1,11 @@
+.vscode
+node_modules
+todo*
+build.sh
+release.sh
+img/demo*.png
+.gitignore
+jsconfig.json
+CONTRIBUTING.md
+vsix-out
+**/*.d.ts

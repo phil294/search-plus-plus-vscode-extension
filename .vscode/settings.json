@@ -1,0 +1,10 @@
+{
+    "cSpell.words": [
+        "codicon",
+        "datetime",
+        "leveldown",
+        "plusplus",
+        "realpath"
+    ],
+    "eslint.experimental.useFlatConfig": true,
+}

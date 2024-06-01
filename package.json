@@ -1,0 +1,85 @@
+{
+	"name": "search-plusplus",
+	"description": "Search++, a fast indexed full text search VSCode extension",
+	"version": "0.0.0",
+	"icon": "img/logo.png",
+	"publisher": "phil294",
+	"private": false,
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/phil294/search++-vscode-extension"
+	},
+	"engines": {
+		"vscode": "^1.47.0"
+	},
+	"categories": [
+		"Other"
+	],
+	"activationEvents": [
+		"onStartupFinished",
+		"TODO"
+	],
+	"extensionDependencies": [],
+	"main": "./src/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "TODO.start",
+				"title": "Open graph view",
+				"category": "search++",
+				"icon": "$(git-branch)"
+			}
+		],
+		"viewsMMM": {
+			"scm": [
+				{
+					"type": "webview",
+					"id": "git-log--graph",
+					"name": "git-log--graph"
+				}
+			]
+		},
+		"configuration": {
+			"title": "Search++",
+			"properties": {
+				"search++.asdfMMM": {
+					"description": "Decide how/where the extension should appear. Changing this option REQUIRES RELOAD.",
+					"type": "string",
+					"default": "editor",
+					"enum": [
+						"editor",
+						"view"
+					],
+					"enumDescriptions": [
+						"As a regular editor tab, so it will be treated like one of your open files",
+						"As a view in the Source Control side nav section. You will also be able to drag it to any other place in the interface."
+					]
+				}
+			}
+		}
+	},
+	"scripts": {},
+	"devDependencies": {
+		"@eslint/eslintrc": "^3.0.2",
+		"@eslint/js": "^9.1.1",
+		"@types/node": "^18.16.3",
+		"@types/vscode": "^1.47.0",
+		"esbuild": "^0.17.18",
+		"eslint": "^8.0.1",
+		"eslint-config-standard": "^17.1.0",
+		"eslint-plugin-import": "^2.25.2",
+		"eslint-plugin-n": "^15.0.0 || ^16.0.0 ",
+		"eslint-plugin-promise": "^6.0.0",
+		"globals": "^15.0.0",
+		"ovsx": "^0.8.1",
+		"vsce": "^2.15.0"
+	},
+	"dependencies": {
+		"classic-level": "^1.4.1",
+		"coffeescript": "^2.7.0",
+		"leveldown": "^6.1.1",
+		"micromatch": "^4.0.7",
+		"search-index": "^4.0.0"
+	}
+}

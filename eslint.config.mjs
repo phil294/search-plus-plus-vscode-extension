@@ -43,6 +43,9 @@ export default [
 				},
 			}],
 			'no-extra-parens': ['error', 'all'],
+			'promise/param-names': 'off',
+			'object-property-newline': 'off',
+			'operator-linebreak': 'off',
 		},
 	},
 ]

@@ -19,7 +19,9 @@ There are several configuration options, but you don't have to configure anythin
 
 Once the initial scan is complete, searching for text in the side bar view is instant.
 
-The extension will immediately start reading your workspace and maintain its index, even after reload. The index is written to disk and can take up significant amounts of space if your workspace is big. The first initial index per workspace takes roughly TODO seconds per total MB of text files - typically a total TODO to TODO seconds. The index then keeps watching all files for changes that aren't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"`.
+The extension will immediately start reading your workspace and maintain its index, even after reload. The index is written to disk and can take up significant amounts of space if your workspace is big. The first initial index per workspace takes roughly TODO seconds per total MB of text files - typically a total TODO to TODO seconds. It's safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. Once complete, this process has to normally never be repeated again. The extension then keeps watching all files for changes (modification date) if they aren't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` with the latter taking precedence if conflicting.
+
+gitignores vs .ignore and nested git repos
 
 sdfsdf you can show he index location and the path of scanned directories with the command TODO.
 

@@ -13,6 +13,9 @@
 	"engines": {
 		"vscode": "^1.47.0"
 	},
+	"enabledApiProposals": [
+		"findFiles2"
+	],
 	"categories": [
 		"Other"
 	],
@@ -20,31 +23,42 @@
 		"onStartupFinished",
 		"TODO"
 	],
-	"extensionDependencies": [],
+	"extensionDependencies": [
+		"vscode.git"
+	],
 	"main": "./src/extension.js",
 	"contributes": {
 		"commands": [
 			{
-				"command": "TODO.start",
-				"title": "Open graph view",
-				"category": "search++",
-				"icon": "$(git-branch)"
+				"command": "search++.search",
+				"title": "Search",
+				"category": "Search++",
+				"icon": "$(search-fuzzy)"
 			}
 		],
-		"viewsMMM": {
-			"scm": [
+		"viewsContainers": {
+			"activitybar": [
 				{
-					"type": "webview",
-					"id": "git-log--graph",
-					"name": "git-log--graph"
+					"id": "search-plusplus",
+					"title": "Search++",
+					"icon": "$(search-fuzzy)"
+				}
+			]
+		},
+		"views": {
+			"search-plusplus": [
+				{
+					"type": "tree",
+					"id": "search++",
+					"name": "Search++"
 				}
 			]
 		},
 		"configuration": {
 			"title": "Search++",
 			"properties": {
-				"search++.asdfMMM": {
-					"description": "Decide how/where the extension should appear. Changing this option REQUIRES RELOAD.",
+				"search++.doNotUse": {
+					"description": "This setting has no effect.",
 					"type": "string",
 					"default": "editor",
 					"enum": [
@@ -52,8 +66,8 @@
 						"view"
 					],
 					"enumDescriptions": [
-						"As a regular editor tab, so it will be treated like one of your open files",
-						"As a view in the Source Control side nav section. You will also be able to drag it to any other place in the interface."
+						"bing",
+						"bong"
 					]
 				}
 			}
@@ -77,7 +91,7 @@
 	},
 	"dependencies": {
 		"classic-level": "^1.4.1",
-		"coffeescript": "^2.7.0",
+		"istextorbinary": "^9.5.0",
 		"leveldown": "^6.1.1",
 		"micromatch": "^4.0.7",
 		"search-index": "^4.0.0"

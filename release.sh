@@ -67,7 +67,7 @@ echo 'patched package.json version patch, updated changelog, committed, tagged'
 pause
 
 npx vsce package
-vsix_file=$(ls -tr git-log--graph-*.vsix* |tail -1)
+vsix_file=$(ls -tr search++-*.vsix* |tail -1)
 mv "$vsix_file" vsix-out/"$vsix_file"
 vsix_file=vsix-out/"$vsix_file"
 echo $vsix_file

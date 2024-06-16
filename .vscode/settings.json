@@ -2,11 +2,14 @@
     "cSpell.words": [
         "codicon",
         "datetime",
+        "fergiemcdowall",
         "gitignores",
         "leveldown",
+        "metas",
         "ovsx",
         "plusplus",
-        "realpath"
+        "realpath",
+        "rignore"
     ],
     "eslint.experimental.useFlatConfig": true,
 }

@@ -54,7 +54,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 	/** @type string[] */
 	let exclude_patterns = []
+
 	// order matters
+	const exclude_config_keys = ['files.exclude', 'search.exclude', 'files.watcherExclude', 'search++.watcherExclude']
+
 	/** gitignored patterns aren't set here but only inside refresh() */
 	let update_exclude_patterns = () => {
 		let default_excludes = {
@@ -64,9 +67,11 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			'**/.git/**': true,
 		}
 		// TODO: works to overwrite file excludes with search++ setting?
-		exclude_patterns = [...new Set(Object.entries([default_excludes].concat(['files.exclude', 'search.exclude', 'files.watcherExclude', 'search++.watcherExclude']
-			.map(c => vscode.workspace.getConfiguration().get(c) || {}))
-			.reduce((all, c) => Object.assign(all, c), {}))
+		exclude_patterns = [...new Set(Object.entries(
+			[default_excludes]
+				.concat(
+					exclude_config_keys.map(c => vscode.workspace.getConfiguration().get(c) || {}))
+				.reduce((all, c) => Object.assign(all, c), {}))
 			.filter(c => c[1])
 			.map(c => c[0]))]
 	}
@@ -174,10 +179,17 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		return true
 	}
 
-	let uri_to_doc = async (/** @type vscode.Uri */ uri) => {
+	let uri_to_index_doc = async (/** @type vscode.Uri */ uri) => {
 		let file_stat = await stat(uri.fsPath)
-		return { _id: uri.path, text: '', size: file_stat.size, mtime: Math.round(file_stat.mtimeMs / 1000) }
+		return /** @type IndexDoc */ ({ // eslint-disable-line no-extra-parens
+			_id: uri.path,
+			text: '',
+			size: file_stat.size,
+			mtime: Math.round(file_stat.mtimeMs / 1000),
+		})
 	}
+
+	const gitignore_filenames = ['.gitignore', '.rignore', '.ignore']
 
 	let find_files = async (/** @type string */glob, /** @type string[] */ excludes) => {
 		log_debug('findFiles...')
@@ -199,7 +211,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				throw e
 			files = (await Promise.all(vscode.workspace.workspaceFolders?.map(async (folder) => {
 				let gitignores = await vscode.workspace.findFiles(
-					new vscode.RelativePattern(folder.uri, '**/.{gitignore,ignore,rignore}'),
+					new vscode.RelativePattern(folder.uri, `**/{${gitignore_filenames.join(',')}}`),
 					`{${excludes.join(',')}}`)
 				let git_excludes = (await Promise.all(gitignores.map(gitignore => {
 					let path_to_gitignore_dir = path.relative(folder.uri.path, path.dirname(gitignore.path))
@@ -244,17 +256,16 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let is_refreshing = false
 	let refresh = async () => {
 		if (is_refreshing)
-			throw new Error('duplicate refresh. please report this error with reproduction steps')
+			throw new Error('duplicate refresh. please report this error with reproduction steps') // TODO
 		is_refreshing = true
 		log_debug('refreshing...')
 		tree_view.title = 'Refreshing...'
 		status_bar_item_command.text = '$(search-fuzzy) Scanning'
 		let new_files = await find_files('**', exclude_patterns)
-		await sleep(10000)
 		log_debug('stat files...')
 		let new_docs = await Promise.all(new_files
 			// TODO in chunks, not all at the same time (?)
-			.map(uri_to_doc))
+			.map(uri_to_index_doc))
 
 		log_debug('comparing with stored...')
 		// TODO: how bad cpu-wise for huge repos?
@@ -316,7 +327,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let watcher = vscode.workspace.createFileSystemWatcher('**')
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		log_debug('file changed', uri.fsPath)
-		// TODO here if file is a gitignore, run refresh
+		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
+			return refresh()
 		// files.watcherExclude files should actually never arrive here, but for the other three settings,
 		// an additional filtering here is required:
 		// TODO: this doesnt check the gitignores. saving/caching those is difficult because folder-based which can themselves change etc
@@ -324,7 +336,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			log_debug('but is excluded')
 			return false
 		}
-		let doc = await uri_to_doc(uri)
+		let doc = await uri_to_index_doc(uri)
 		if (! await is_indexable(doc))
 			return
 		index_queue.set(doc._id, doc)
@@ -338,6 +350,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	watcher.onDidDelete(async (uri) => {
 		log_debug('delete doc onDidDelete', uri.path)
 		await idx.DELETE(uri.path)
+		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
+			refresh()
 	})
 
 	// global_state = (###* @type string ### key) =>
@@ -347,9 +361,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// 	get: => context.workspaceState.get(key)
 	// 	set: (###* @type any ### v) => context.workspaceState.update(key, v)
 	vscode.workspace.onDidChangeConfiguration((event) => {
-		if (event.affectsConfiguration(EXT_ID))
-			// TODO
-			return debounce(() => {}, 500)
+		if (exclude_config_keys.some(f => event.affectsConfiguration(f)))
+			return refresh()
 	})
 	context.subscriptions.push(vscode.commands.registerCommand('search++.search', async () => {
 		log_debug('user initiated search')

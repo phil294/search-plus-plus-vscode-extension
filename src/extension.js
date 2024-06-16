@@ -83,9 +83,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	 * @property {number} size
 	 */
 
-	/** This is the default value of search-index, but we need it for search also.
+	/** This is the default value of search-index plus underscore. We need it for search also.
 	It's a match not a split though, but keeping its official name */
-	const index_token_split_regex = /[\p{L}\d]+/gu
+	const index_token_split_regex = /[\p{L}\d_]+/gu
 
 	let index_docs = async (/** @type {IndexDoc[]} */ docs) => {
 		// Index only _id+text
@@ -93,6 +93,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			.map(({ _id, text }) => ({ _id, text })), {
 			storeRawDocs: false,
 			tokenSplitRegex: index_token_split_regex,
+			// caseSensitive: true,
 		})
 		// ...but store only _id+mtime
 		await idx.PUT_RAW(docs
@@ -403,7 +404,25 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// status_bar_item_command.command = START_CMD
 	context.subscriptions.push(status_bar_item_command)
 	status_bar_item_command.tooltip = 'Search++ extension'
-	return status_bar_item_command.show()
+	status_bar_item_command.show()
+
+	context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ pattern: '**' }, {
+		async provideCompletionItems(doc, pos) {
+			let word = (doc.getText(doc.getWordRangeAtPosition(pos)).match(index_token_split_regex) || [])[0]
+			log_debug('provideCompletionItems', word)
+			if (! word || word.length < 3)
+				return
+			let dict = (await idx.DICTIONARY({
+				FIELD: 'text', VALUE: word.toLowerCase(),
+			})).slice(0, 5000) // TODO configurable
+			log_debug(`${dict.length} results`)
+			// TODO: configurable overall case sensitivity (which needs full re-index, and rm toLowerCase usages)
+			return dict.map(d => ({
+				label: d,
+				detail: 'Search++',
+			}))
+		},
+	}))
 }
 
 // public api of this extension:

@@ -49,14 +49,16 @@ class IndexQueue extends Map {
 			try {
 				file_buf = await readFile(vscode.Uri.file(file_meta.path).fsPath)
 			} catch (e) {
-				if (e.code !== 'EACCES')
+				if (e.code !== 'EACCES' && e.code !== 'EISDIR') // TODO: why do some dirs appear here? via file changer it seems
 					// TODO check logs size and when expiring
 					log_error(`Indexing: Failed to read file '${path}': ${JSON.stringify(e)}`)
 				continue
 			}
 			if (await isBinary(null, file_buf)) { // check buffer contents
 				log_debug('skipping: is binary (buf)')
-				continue
+				// We still write the file into the index as empty so to prevent unnecessary
+				// re-scanning at next invocation
+				file_buf = ''
 			}
 			docs_batch.push({ _id: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString() })
 			docs_batch_bytes_read += file_buf.length

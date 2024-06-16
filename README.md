@@ -17,11 +17,13 @@ You can **install the extension in VSCode from [here](https://marketplace.visual
 
 There are several configuration options, but you don't have to configure anything.
 
-Once the initial scan is complete, searching for text in the side bar view is instant.
+Once the initial indexing is complete, searching for text in the side bar view is instant.
 
-The extension will immediately start reading your workspace and maintain its index, even after reload. The index is written to disk and can take up significant amounts of space if your workspace is big. The first initial index per workspace takes roughly TODO seconds per total MB of text files - typically a total TODO to TODO seconds. It's safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. Once complete, this process has to normally never be repeated again. The extension then keeps watching all files for changes (modification date) if they aren't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` with the latter taking precedence if conflicting.
+## Behavior
 
-gitignores vs .ignore and nested git repos
+Search++ will immediately start reading your workspace ("Scanning" in status bar) and maintain its index, even after reload. The first initial indexing ("Indexing" in status bar) per workspace takes roughly 10 ms - 50 ms per indexable file - typically a total of 1 to 100 seconds per workspace. It's safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. The index is written to disk and takes up around 50 % in size of the indexable files themselves. Once complete, this process has to normally never be repeated again. A file is considered indexable if it isn't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` settings with the latter taking precedence if conflicting, or listed in some `.gitignore`, `.rignore` or `.ignore` file. The extension keeps watching all indexable files for changes, based on their modification date.
+
+## asdf
 
 sdfsdf you can show he index location and the path of scanned directories with the command TODO.
 

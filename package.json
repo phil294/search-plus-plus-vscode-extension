@@ -1,7 +1,7 @@
 {
 	"name": "search-plusplus",
 	"description": "Search++, a fast indexed full text search VSCode extension",
-	"version": "0.0.0",
+	"version": "0.0.1",
 	"icon": "img/logo.png",
 	"publisher": "phil294",
 	"private": false,

@@ -3,7 +3,6 @@ let search_index = require('search-index')
 let { ClassicLevel } = require('classic-level')
 const { mkdirSync, existsSync } = require('fs')
 const { log_debug } = require('./log')
-const { isBinary } = require('istextorbinary')
 
 /**
  * @typedef {object} FileMeta
@@ -65,12 +64,6 @@ module.exports.Indexer = class {
 	async all_meta_docs() {
 		return /** @type {IndexDocStored[]} */ ((await (await this.idx) // eslint-disable-line no-extra-parens
 			.ALL_DOCUMENTS()).map(doc => doc._doc))
-	}
-
-	async is_indexable(/** @type FileMeta */ doc) {
-		return ! await isBinary(doc.path) // checks only file extension
-			&& doc.size > 0
-			&& doc.size < 1024 * 1024 // TODO configure
 	}
 
 	async autocomplete_word(/** @type string */ word) {

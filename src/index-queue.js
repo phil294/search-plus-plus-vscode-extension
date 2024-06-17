@@ -72,6 +72,12 @@ class IndexQueue extends Map {
 		on_progress(null)
 		this.is_running = false
 	}
+
+	async is_indexable(/** @type FileMeta */ doc) {
+		return ! await isBinary(doc.path) // checks only file extension
+			&& doc.size > 0
+			&& doc.size < 1024 * 1024 // TODO configure
+	}
 }
 
 module.exports.IndexQueue = IndexQueue

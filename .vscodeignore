@@ -1,6 +1,7 @@
 .vscode
-node_modules
 todo*
+src
+node_modules
 build.sh
 release.sh
 img/demo*.png
@@ -9,3 +10,5 @@ jsconfig.json
 CONTRIBUTING.md
 vsix-out
 **/*.d.ts
+eslint.config.js
+eslint.config.mjs

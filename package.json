@@ -13,9 +13,6 @@
 	"engines": {
 		"vscode": "^1.47.0"
 	},
-	"enabledApiProposals": [
-		"findFiles2"
-	],
 	"categories": [
 		"Other"
 	],
@@ -26,7 +23,7 @@
 	"extensionDependencies": [
 		"vscode.git"
 	],
-	"main": "./src/extension.js",
+	"main": "./main.js",
 	"contributes": {
 		"commands": [
 			{

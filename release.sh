@@ -7,6 +7,11 @@ pause() {
     echo
 }
 
+on_close() {
+    echo "require('./extension')" > main.js # revert
+}
+trap on_close EXIT
+
 echo update readme
 pause
 
@@ -37,6 +42,12 @@ pause
 
 # echo built. manual tests:
 # pause
+# main.js is different for bundle than for local testing, so we can skip the esbuild step in dev
+# but still keep the same entrypoint in package.json for both scenarios
+yarn esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode
+
+echo built. manual tests:
+pause
 
 # vscodium --extensionDevelopmentPath="$PWD" --disable-extensions
 # pause
@@ -67,7 +78,7 @@ echo 'patched package.json version patch, updated changelog, committed, tagged'
 pause
 
 npx vsce package
-vsix_file=$(ls -tr search++-*.vsix* |tail -1)
+vsix_file=$(ls -tr search-plusplus-*.vsix* |tail -1)
 mv "$vsix_file" vsix-out/"$vsix_file"
 vsix_file=vsix-out/"$vsix_file"
 echo $vsix_file

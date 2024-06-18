@@ -76,7 +76,7 @@ module.exports.Indexer = class {
 		this.db.run(`insert into files (path, mtime) values ${double_qmarks}`, docs.map(d => [d.path, d.mtime]).flat())
 		let new_ids = this.db.all(`select rowid, path from files where path in (${single_qmarks})`, paths)
 		let new_id_by_path = new_ids.reduce((all, { rowid, path }) => { all[path] = rowid; return all }, {})
-		this.db.run(`insert into search_index_fts (rowid, text) values ${double_qmarks}`, docs.map((doc, i) => [new_id_by_path[doc.path], doc.text]).flat())
+		this.db.run(`insert into search_index_fts (rowid, text) values ${double_qmarks}`, docs.map(doc => [new_id_by_path[doc.path], doc.text]).flat())
 		// TODO: insert into fts(fts) values ('optimize')
 		// other optimize..?
 		this.db.exec('commit')

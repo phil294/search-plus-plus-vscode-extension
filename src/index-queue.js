@@ -98,7 +98,7 @@ class IndexQueue extends Map {
 	async is_indexable(/** @type FileMeta */ doc) {
 		return ! await isBinary(doc.path) // checks only file extension
 			&& doc.size > 0
-			&& doc.size < 1024 * 1024 // TODO configure
+			&& doc.size < 20 * 1024 * 1024 // TODO configure. A large value here isn't really dangerous (apart from increasing index size and initial indexing time), but the product of this and read_group_size x4 will be the amount of RAM (in MB) that's needed while indexing, so be careful setting both too high.
 	}
 }
 

@@ -113,7 +113,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		let new_docs_need_indexing = new_file_metas.filter(new_file_meta =>
 			old_mtime_by_path[new_file_meta.path] !== new_file_meta.mtime)
 		for (let doc of new_docs_need_indexing)
-			if (await indexer.is_indexable(doc))
+			if (await index_queue.is_indexable(doc))
 				index_queue.add(doc)
 
 		// TODO: perf
@@ -145,7 +145,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			return false
 		}
 		let file_meta = await uri_to_file_meta(uri)
-		if (! await indexer.is_indexable(file_meta))
+		if (! await index_queue.is_indexable(file_meta))
 			return
 		index_queue.add(file_meta)
 		debounce(() => {
@@ -181,7 +181,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			.filter(word => word.length >= min_word_length) // TODO docs
 		if (! words.length)
 			return
-		let paths = indexer.find_paths_by_multiple_partial_words(words)
+		let paths = await indexer.find_paths_by_multiple_partial_words(words)
 		log_debug('search result', paths)
 	}))
 
@@ -214,6 +214,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				detail: 'Search++',
 			}))
 		},
+		// resolveCompletionItem() {} TODO: look up paths where in use ordered by usage POG
 	}))
 
 	// public api of this extension:

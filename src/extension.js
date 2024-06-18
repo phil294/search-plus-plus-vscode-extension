@@ -89,7 +89,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		let old_meta_docs = await indexer.all_meta_docs()
 		// TODO: how bad cpu-wise for huge repos?
 		let old_mtime_by_path = old_meta_docs.reduce((/** @type {Record<string,number>} */ all, doc) => {
-			all[doc._id] = doc.mtime
+			all[doc.path] = doc.mtime
 			return all
 		}, {})
 
@@ -105,8 +105,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		// TODO: perf
 		let new_docs_paths = new Set(new_file_metas.map(d => d.path))
 		let old_paths_need_deletion = old_meta_docs.filter(doc_meta =>
-			! new_docs_paths.has(doc_meta._id.toString()),
-		).map(d => d._id.toString())
+			! new_docs_paths.has(doc_meta.path.toString()),
+		).map(d => d.path.toString())
 		log_debug('deleting docs no longer present', old_paths_need_deletion)
 		await indexer.delete_doc_by_path(...old_paths_need_deletion)
 
@@ -192,8 +192,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			log_debug('provideCompletionItems', word)
 			if (! word || word.length < min_word_length)
 				return
-			let dict = (await indexer.autocomplete_word(word))
-				.slice(0, 5000) // TODO configurable
+			let dict = await indexer.autocomplete_word(word, 10000) // TODO configurable
 			log_debug(`${dict.length} results`)
 			// TODO: configurable overall case sensitivity (which needs full re-index, and rm toLowerCase usages)
 			return dict.map(d => ({

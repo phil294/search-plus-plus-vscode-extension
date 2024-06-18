@@ -9,7 +9,9 @@
         "ovsx",
         "plusplus",
         "realpath",
-        "rignore"
+        "rignore",
+        "rowid",
+        "unindexed"
     ],
     "eslint.experimental.useFlatConfig": true,
 }

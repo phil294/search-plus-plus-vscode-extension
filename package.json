@@ -87,10 +87,8 @@
 		"vsce": "^2.15.0"
 	},
 	"dependencies": {
-		"classic-level": "^1.4.1",
 		"istextorbinary": "^9.5.0",
-		"leveldown": "^6.1.1",
 		"micromatch": "^4.0.7",
-		"search-index": "^4.0.0"
+		"node-sqlite3-wasm": "^0.8.16"
 	}
 }

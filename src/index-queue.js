@@ -60,7 +60,7 @@ class IndexQueue extends Map {
 				// re-scanning at next invocation
 				file_buf = ''
 			}
-			docs_batch.push({ _id: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString() })
+			docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString() })
 			docs_batch_bytes_read += file_buf.length
 			if (docs_batch_bytes_read > docs_batch_bytes_threshold)
 				await flush_docs_batch()

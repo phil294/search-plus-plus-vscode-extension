@@ -8,7 +8,7 @@ pause() {
 }
 
 on_close() {
-    echo "require('./extension')" > main.js # revert
+    echo "module.exports = require('./src/extension')" > main.js # revert
 }
 trap on_close EXIT
 
@@ -45,8 +45,14 @@ pause
 # main.js is different for bundle than for local testing, so we can skip the esbuild step in dev
 # but still keep the same entrypoint in package.json for both scenarios
 yarn esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode
+cp node_modules/node-sqlite3-wasm/dist/node-sqlite3-wasm.wasm .
 
-echo built. manual tests:
+echo built
+echo manual tests:
+pause
+
+vscodium --extensionDevelopmentPath="$PWD" --disable-extensions
+pause
 pause
 
 # vscodium --extensionDevelopmentPath="$PWD" --disable-extensions

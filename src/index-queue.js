@@ -1,7 +1,7 @@
 let vscode = require('vscode')
 const { log_debug, log_error } = require('./log')
 const { readFile } = require('fs/promises')
-const { isBinary } = require('istextorbinary')
+const { isBinary } = require('istextorbinary/edition-es2022/index.js')
 
 /** @typedef {import('./indexer').Indexer} Indexer */
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
@@ -96,7 +96,7 @@ class IndexQueue extends Map {
 	}
 
 	async is_indexable(/** @type FileMeta */ doc) {
-		return ! await isBinary(doc.path) // checks only file extension
+		return ! await isBinary(doc.path, undefined) // checks only file extension
 			&& doc.size > 0
 			&& doc.size < 20 * 1024 * 1024 // TODO configure. A large value here isn't really dangerous (apart from increasing index size and initial indexing time), but the product of this and read_group_size x4 will be the amount of RAM (in MB) that's needed while indexing, so be careful setting both too high.
 	}

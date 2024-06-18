@@ -2,7 +2,7 @@ let vscode = require('vscode')
 let { debounce } = require('./util')
 const { isMatch } = require('micromatch')
 const { stat } = require('fs/promises')
-const { log_debug } = require('./log')
+const { log_debug, log_error } = require('./log')
 const { Indexer } = require('./indexer')
 const { IndexQueue } = require('./index-queue')
 const { EXT_ID } = require('./global')
@@ -17,6 +17,12 @@ const word_split_regex = /[\p{L}\d_]+/gu
 
 /** Too small and performance becomes a real problem */
 const min_word_length = 3
+
+process.on('unhandledRejection', (/** @type any */ err) => {
+	console.error('unhandledRejection-handler', err)
+	log_error(err.message || JSON.stringify(err))
+	// The error still appears as "rejected promise not handled within 1 second: ..." but what can you do \_( ._.)_/
+})
 
 module.exports.activate = async (/** @type vscode.ExtensionContext */context) => {
 	log_debug('extension activate')
@@ -72,15 +78,23 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let is_scanning = false
 	let scan = async () => {
 		if (is_scanning)
-			throw new Error('duplicate scan. please report this error with reproduction steps') // TODO
+			throw new Error('duplicate scan') // TODO
 		is_scanning = true
 		log_debug('scanning...')
 		status_bar_item_command.text = '$(search-fuzzy) Scanning'
 		let exclude_patterns = get_exclude_patterns()
 		log_debug('exclude_patterns', exclude_patterns)
-		let new_files = await find_files('**', { excludes: exclude_patterns, gitignore_filenames })
+		let new_files
+		try {
+			new_files = await find_files('**', { excludes: exclude_patterns, gitignore_filenames })
+		} catch (e) {
+			if (e.message.includes('error parsing glob'))
+				return log_error('Scanning failed because one of your gitignore files contains unparsable contents. Please correct them, then restart VSCode.')
+			throw e
+		}
 		log_debug('stat files...')
 		let new_file_metas = await Promise.all(new_files
+			// TODO: this is the bottleneck for very large repos. how to speed up?
 			// TODO in chunks, not all at the same time (?)
 			.map(uri_to_file_meta))
 

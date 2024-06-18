@@ -35,11 +35,19 @@ class IndexQueue extends Map {
 		let docs_batch_bytes_read = 0
 		let flush_docs_batch = async () => {
 			log_debug(`batch-index ${docs_batch.length} docs`)
-			await this.indexer.index_docs(docs_batch)
+			if (! docs_batch.length)
+				return
+			try {
+				await this.indexer.index_docs(docs_batch)
+			} catch (e) {
+				// shouldn't throw because then is_running won't be unset, and errors, if any, are most likely to occur here
+				log_error('Indexing docs failed unexpectedly: ' + JSON.stringify(e))
+			}
 			docs_batch_bytes_read = 0
 			docs_batch = []
 		}
 		let uri_i = -1
+		let skipped_path_EACCESS = ''
 		// TODO: configurable
 		const read_group_size = 20 // 100 7sec, 20 8sec, 10 9sec, 1 12sec. 20 without logging 6sec. Mustn't be too big because reading and many files at the same time and keeping them in ram can be heavy on system resources
 		let entries = [...this.entries()]
@@ -55,10 +63,14 @@ class IndexQueue extends Map {
 				try {
 					file_buf = await readFile(vscode.Uri.file(file_meta.path).fsPath)
 				} catch (e) {
-					if (e.code !== 'EACCES' && e.code !== 'EISDIR') // TODO: why do some dirs appear here? via file changer it seems
+					if (e.code === 'EISDIR') // TODO: why do some dirs appear here? via file changer it seems
+						console.warn(file_meta.path, e)
+					else if (e.code === 'EACCES')
+						skipped_path_EACCESS = file_meta.path
+					else
 						// TODO check logs size and when expiring
-						log_error(`Indexing: Failed to read file '${path}': ${JSON.stringify(e)}`)
-					continue
+						log_error(`Indexing: Unexpected error: Failed to read file '${path}': ${JSON.stringify(e)}`)
+					return
 				}
 				if (await isBinary(null, file_buf)) { // check buffer contents
 					log_debug('skipping: is binary (buf)')
@@ -73,9 +85,12 @@ class IndexQueue extends Map {
 				await flush_docs_batch()
 		}
 		await flush_docs_batch()
+		if (skipped_path_EACCESS)
+			log_error(`Warning: File '${skipped_path_EACCESS}' could not be read due to permission problems.`)
 
 		log_debug('run index queue complete')
 		log_debug(`indexing took ${(Date.now() - start) / 1000} seconds`)
+		console.log(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
 		on_progress(null)
 		this.is_running = false
 	}

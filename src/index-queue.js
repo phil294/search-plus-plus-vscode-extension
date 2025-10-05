@@ -1,6 +1,7 @@
 let vscode = require('vscode')
-const { log_debug, log_error } = require('./log')
+const { log_debug, log_error, log_warn } = require('./log')
 const { readFile } = require('fs/promises')
+// https://github.com/bevry/istextorbinary/issues/307
 const { isBinary } = require('istextorbinary/edition-es2022/index.js')
 
 /** @typedef {import('./indexer').Indexer} Indexer */
@@ -56,6 +57,7 @@ class IndexQueue extends Map {
 			await Promise.all(read_group.map(async ([path, file_meta]) => {
 				this.delete(path)
 				uri_i++
+				// TODO: perf?
 				log_debug(`indexing (${uri_i + 1}/${size}) ${path}`)
 				if (uri_i % 100 === 0)
 					on_progress(uri_i / size)
@@ -64,7 +66,7 @@ class IndexQueue extends Map {
 					file_buf = await readFile(vscode.Uri.file(file_meta.path).fsPath)
 				} catch (e) {
 					if (e.code === 'EISDIR') // TODO: why do some dirs appear here? via file changer it seems
-						console.warn(file_meta.path, e)
+						log_warn(file_meta.path, e)
 					else if (e.code === 'EACCES')
 						skipped_path_EACCESS = file_meta.path
 					else
@@ -88,9 +90,9 @@ class IndexQueue extends Map {
 		if (skipped_path_EACCESS)
 			log_error(`Warning: File '${skipped_path_EACCESS}' could not be read due to permission problems.`)
 
-		log_debug('run index queue complete')
+		log_debug('indexing complete')
 		log_debug(`indexing took ${(Date.now() - start) / 1000} seconds`)
-		console.log(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
+		console.debug(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
 		on_progress(null)
 		this.is_running = false
 	}

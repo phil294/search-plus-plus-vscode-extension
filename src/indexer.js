@@ -23,9 +23,9 @@ const { Database } = require('node-sqlite3-wasm')
  * @property {number} mtime
  */
 
-/** wrapper around fergiemcdowall/search-index */
+/** wrapper around sqlite3 fts wasm */
 module.exports.Indexer = class {
-	constructor(/** @type {{storage_uri:import('vscode').Uri, word_split_regex:RegExp}} */ { storage_uri, word_split_regex }) {
+	constructor(/** @type {{storage_uri:import('vscode').Uri}} */ { storage_uri }) {
 		let index_path = path.join(storage_uri.fsPath, 'index')
 		if (! existsSync(index_path))
 			mkdirSync(index_path, { recursive: true })
@@ -47,8 +47,6 @@ module.exports.Indexer = class {
 			else
 				throw e
 		}
-
-		this.token_split_regex = word_split_regex
 	}
 
 	init_db() {
@@ -70,8 +68,8 @@ module.exports.Indexer = class {
 		let paths = docs.map(d => d.path)
 		this.db.exec('begin transaction')
 		// all at the same time is about 40% faster than docs.length individual `.run()`s, that's why all these weird prp stmts are built up like this
-		let single_qmarks = new Array(docs.length).fill('?').join(', ')
-		let double_qmarks = new Array(docs.length).fill('(?, ?)').join(', ')
+		let single_qmarks = new Array(docs.length).fill('?').join(',')
+		let double_qmarks = new Array(docs.length).fill('(?,?)').join(',')
 		await this.delete_doc_by_path(...paths)
 		this.db.run(`insert into files (path, mtime) values ${double_qmarks}`, docs.map(d => [d.path, d.mtime]).flat())
 		let new_ids = this.db.all(`select rowid, path from files where path in (${single_qmarks})`, paths)
@@ -84,11 +82,11 @@ module.exports.Indexer = class {
 
 	// TODO: pass arr instead?
 	async delete_doc_by_path(/** @type {string[]} */ ...paths) {
-		let single_qmarks = new Array(paths.length).fill('?').join(', ')
+		let single_qmarks = new Array(paths.length).fill('?').join(',')
 		let old_ids = this.db.all(`select rowid from files where path in (${single_qmarks})`, paths).map(r => r.rowid)
 		this.db.run(`delete from files where path in (${single_qmarks})`, paths)
 		this.db.run('delete from search_index_fts where rowid in (' +
-			new Array(old_ids.length).fill('?').join(', ') + ')', old_ids)
+			new Array(old_ids.length).fill('?').join(',') + ')', old_ids)
 	}
 
 	/** not returning text contents here */
@@ -97,6 +95,7 @@ module.exports.Indexer = class {
 		let rows = this.db.all('select path, mtime from files')
 		for (let row of rows)
 			row.mtime = Number(row.mtime)
+		// TODO: indexdoc has a .text prop ...?
 		return /** @type {IndexDoc[]} */ (rows) // eslint-disable-line no-extra-parens
 	}
 

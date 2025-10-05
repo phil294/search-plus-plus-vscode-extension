@@ -14,5 +14,5 @@
         "rowid",
         "unindexed"
     ],
-    "eslint.experimental.useFlatConfig": true,
+    "eslint.useFlatConfig": true,
 }

@@ -2,24 +2,24 @@ let vscode = require('vscode')
 let { debounce } = require('./util')
 const { isMatch } = require('micromatch')
 const { stat } = require('fs/promises')
-const { log_debug, log_error } = require('./log')
+const { log_debug, log_error, log_warn } = require('./log')
 const { Indexer } = require('./indexer')
 const { IndexQueue } = require('./index-queue')
 const { EXT_ID } = require('./global')
 const { find_files } = require('./find-files')
-const { on_git_folders_changed } = require('./git')
 
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
 
-/** This is the default value of search-index plus underscore. We need it for search also. */
+/** This is the default value of fergiemcdowall/search-index plus underscore. SQLite FTS splits automatically,
+but we need it for search also. TODO: or do we? */
 const word_split_regex = /[\p{L}\d_]+/gu
 
-/** Too small and performance becomes a real problem */
+/** Too small and performance becomes a real problem */ // TODO: configurable
 const min_word_length = 3
 
 process.on('unhandledRejection', (/** @type any */ err) => {
-	console.error('unhandledRejection-handler', err)
+	log_error('unhandledRejection-handler', err)
 	log_error(err.message || JSON.stringify(err))
 	// The error still appears as "rejected promise not handled within 1 second: ..." but what can you do \_( ._.)_/
 })
@@ -33,13 +33,13 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		return
 	}
 
-	let indexer = new Indexer({ storage_uri: context.storageUri, word_split_regex })
+	let indexer = new Indexer({ storage_uri: context.storageUri })
 	let index_queue = new IndexQueue(indexer)
 
 	// order matters: right overwrites left
 	const exclude_config_keys = ['files.exclude', 'search.exclude', 'files.watcherExclude', 'search++.watcherExclude']
 
-	/** gitignored patterns aren't determined here but only inside find-files */
+	/** gitignored patterns are not part of this */
 	let get_exclude_patterns = () => {
 		/** @type {Record<string,boolean>} */
 		let default_excludes = {
@@ -48,17 +48,15 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			// custom stuff which we'll never care for
 			'**/.git/**': true,
 		}
-		// TODO: works to overwrite file excludes with search++ setting?
 		return [...new Set(Object.entries(
 			[default_excludes]
 				.concat(
+					// settings in the wrong format are silently ignored by Object.assign below
 					exclude_config_keys.map(c => vscode.workspace.getConfiguration().get(c) || {}))
 				.reduce((all, c) => Object.assign(all, c), {}))
 			.filter(c => c[1])
 			.map(c => c[0]))]
 	}
-
-	// TODO uncaught exception/promise rejection handler?
 
 	let uri_to_file_meta = async (/** @type vscode.Uri */ uri) => {
 		let file_stat = await stat(uri.fsPath)
@@ -78,10 +76,11 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let is_scanning = false
 	let scan = async () => {
 		if (is_scanning)
-			throw new Error('duplicate scan') // TODO
+			return log_warn('duplicate scan')
 		is_scanning = true
+		let start = Date.now()
 		log_debug('scanning...')
-		status_bar_item_command.text = '$(search-fuzzy) Scanning'
+		status_bar_item_command.text = '$(search-fuzzy) 1/2 Scanning'
 		let exclude_patterns = get_exclude_patterns()
 		log_debug('exclude_patterns', exclude_patterns)
 		let new_files
@@ -101,7 +100,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		log_debug('comparing with stored...')
 		// TODO: how bad cpu-wise for huge repos?
 		let old_meta_docs = await indexer.all_meta_docs()
-		// TODO: how bad cpu-wise for huge repos?
+		// TODO: how bad cpu-wise for huge repos? Map<> faster?
 		let old_mtime_by_path = old_meta_docs.reduce((/** @type {Record<string,number>} */ all, doc) => {
 			all[doc.path] = doc.mtime
 			return all
@@ -119,27 +118,32 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		// TODO: perf
 		let new_docs_paths = new Set(new_file_metas.map(d => d.path))
 		let old_paths_need_deletion = old_meta_docs.filter(doc_meta =>
-			! new_docs_paths.has(doc_meta.path.toString()),
+			! new_docs_paths.has(doc_meta.path.toString()), // TODO: why tostring?
 		).map(d => d.path.toString())
-		log_debug('deleting docs no longer present', old_paths_need_deletion)
+		log_debug('deleting docs no longer present', old_paths_need_deletion.slice(0,100), old_paths_need_deletion.length > 100 ? `... and ${old_paths_need_deletion.length - 100} more` : '')
 		await indexer.delete_doc_by_path(...old_paths_need_deletion)
 
 		status_bar_item_command.text = ''
 		log_debug('scanning complete')
-		is_scanning = false
+		log_debug(`scanning took ${(Date.now() - start) / 1000} seconds`)
 		index_queue.run({ on_progress: on_index_queue_progress })
+		is_scanning = false
 	}
+	let scan_debounced = () => debounce(scan, 2500)
 
-	on_git_folders_changed(scan)
+	setTimeout(scan, 10)
+
+	vscode.workspace.onDidChangeWorkspaceFolders(scan_debounced)
 
 	let watcher = vscode.workspace.createFileSystemWatcher('**')
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		log_debug('file changed', uri.fsPath)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
-			return scan()
+			return scan_debounced()
 		// files.watcherExclude files should actually never arrive here, but for the other three settings,
 		// an additional filtering here is required:
 		// TODO: this doesn't check the gitignores. saving/caching those is difficult because folder-based which can themselves change etc
+		// so does this unnecessarily index stuff?
 		if (isMatch(uri.path, get_exclude_patterns())) { // TODO test
 			log_debug('but is excluded')
 			return false
@@ -160,12 +164,12 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		log_debug('delete doc onDidDelete', uri.path)
 		await indexer.delete_doc_by_path(uri.path)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
-			scan()
+			scan_debounced()
 	})
 
 	vscode.workspace.onDidChangeConfiguration((event) => {
 		if (exclude_config_keys.some(f => event.affectsConfiguration(f)))
-			return scan()
+			return scan_debounced()
 	})
 	context.subscriptions.push(vscode.commands.registerCommand('search++.search', async () => {
 		log_debug('user initiated search')

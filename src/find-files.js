@@ -4,25 +4,24 @@ let path = require('path')
 const { log_debug, log_error } = require('./log')
 
 // https://github.com/microsoft/vscode/issues/48674
-module.exports.find_files = async (/** @type string */glob, /** @type {{excludes:string[],gitignore_filenames:string[]}} */ { excludes, gitignore_filenames }) => {
+module.exports.find_files = async (/** @type string */ glob, /** @type {{excludes:string[],gitignore_filenames:string[]}} */ { excludes, gitignore_filenames }) => {
 	log_debug('findFiles...')
 	// TODO cancellationtoken
 	// "search.useIgnoreFiles": true, // what if false TODO
 	/** @type {vscode.Uri[]} */
 	let files = []
 	try {
-		// @ts-ignore
-		files = await vscode.workspace.findFiles2(glob, {
-			exclude: `{${excludes.join(',')}}`,
-			useIgnoreFiles: true,
-			useDefaultExcludes: true,
-			useDefaultSearchExcludes: true,
-			useGlobalIgnoreFiles: true,
-			useParentIgnoreFiles: true,
+		files = await vscode.workspace.findFiles2([glob], {
+			exclude: excludes,
+			useIgnoreFiles: { local: true, parent: true, global: true },
+			followSymlinks: true,
+			maxResults: 20000, // TODO: is standard
+			useExcludeSettings: vscode.ExcludeSettingOptions.SearchAndFilesExclude,
 		})
 	} catch (e) {
 		if (! e.message.includes('enabledApiProposals'))
 			throw e
+		log_debug('findFiles2 not enabled, falling back to gitignores')
 		files = (await Promise.all(vscode.workspace.workspaceFolders?.map(async (folder) => {
 			let gitignores = await vscode.workspace.findFiles(
 				new vscode.RelativePattern(folder.uri, `**/{${gitignore_filenames.join(',')}}`),

@@ -1,6 +1,6 @@
 {
 	"name": "search-plusplus",
-	"description": "Search++, a fast indexed full text search VSCode extension",
+	"description": "A fast, indexed full text search VSCode extension, with optional intellisense",
 	"version": "0.0.2",
 	"icon": "img/logo.png",
 	"publisher": "phil294",
@@ -70,25 +70,29 @@
 			}
 		}
 	},
+	"enabledApiProposals": [
+		"findFiles2"
+	],
 	"scripts": {},
 	"devDependencies": {
-		"@eslint/eslintrc": "^3.1.0",
-		"@eslint/js": "^9.5.0",
-		"@types/node": "^20.14.5",
-		"@types/vscode": "1.47.0",
-		"esbuild": "^0.21.5",
-		"eslint": "^9.5.0",
-		"eslint-plugin-n": "^17.9.0",
-		"eslint-plugin-promise": "^6.2.0",
-		"globals": "^15.6.0",
-		"neostandard": "^0.7.2",
-		"npm-check-updates": "^16.14.20",
-		"ovsx": "^0.9.1",
+		"@eslint/eslintrc": "^3.3.1",
+		"@eslint/js": "^9.37.0",
+		"@types/node": "^24.6.2",
+		"@types/vscode": "1.104.0",
+		"esbuild": "^0.25.10",
+		"eslint": "^9.37.0",
+		"eslint-plugin-n": "^17.23.1",
+		"eslint-plugin-promise": "^7.2.1",
+		"globals": "^16.4.0",
+		"neostandard": "^0.12.2",
+		"npm-check-updates": "^19.0.0",
+		"ovsx": "^0.10.6",
 		"vsce": "^2.15.0"
 	},
 	"dependencies": {
+		"@vscode/dts": "^0.4.1",
 		"istextorbinary": "^9.5.0",
-		"micromatch": "^4.0.7",
-		"node-sqlite3-wasm": "^0.8.16"
+		"micromatch": "^4.0.8",
+		"node-sqlite3-wasm": "^0.8.49"
 	}
 }

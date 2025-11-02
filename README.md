@@ -9,9 +9,12 @@ Maintains an index on the contents of all files in your workspace. Optimized for
 
 Features:
 
-1. Alternative instant search panel
-1. Text-based Autocomplete
-1. Text-based Go to definition fallback
+images coming soon
+
+1. Instant alternative Search panel
+1. Instant text-based Autocomplete
+1. Instant text-based Go to definition fallback
+1. (Not yet implemented: Instant File picker)
 
 For all text files, regardless of language.
 
@@ -27,7 +30,7 @@ Once the initial indexing is complete, all actions provided by this extension ar
 
 Search++ will immediately start reading your workspace ("Scanning" in status bar) and maintain its index, even after reload.
 
-The first initial indexing ("Indexing" in status bar) per workspace takes roughly 1 ms per indexable file, so typically just a few seconds per workspace. It's always safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. The index is written to disk and takes up around 30 % in size of the indexable files themselves<!-- TODO: check again -->. Once complete, this process never has needs to run again, as the extension keeps monitoring your workspace for changes only.
+The first initial indexing ("Indexing" in status bar) per workspace takes roughly 2 ms per indexable file, so typically just a few seconds per workspace. It's always safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. The index is written to disk and takes up around 200 % in size of the indexable files themselves<!-- TODO: check again -->. Once complete, this process never has needs to run again, as the extension keeps monitoring your workspace for changes only.
 
 A file is considered indexable if it isn't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` settings with the latter taking precedence if conflicting respectively, or listed in some `.gitignore`, `.rignore` or `.ignore` file. The extension keeps watching all indexable files for changes, based on their modification date.
 
@@ -35,7 +38,7 @@ All searches are performed case insensitive, results are case preserving.
 
 ## Large workspaces
 
-Everything has been optimized for very large repositories. Behemoths like Chromium source (more than 350,000 indexable files) behave instantaneously after the initial index which takes around five minutes.
+Everything has been optimized for very large repositories. Behemoths like Chromium source (more than 350,000 indexable files) take about one hour for the initial indexing. There's still definitely room for indexing speed improvements, but once the onetime indexing is done, everything behaves instantaneously forever.
 
 In some very large projects like these with many `.gitignore` files, there might be too much delay at startup and possibly unnecessary indexing. This is because we're still waiting for VSCode's new `findFiles2` proposal to be stabilized: https://github.com/microsoft/vscode/issues/48674. If you want to speed things up, you can enable the proposed extension API `findFiles2` if you wan't, but it's [rather tricky](https://code.visualstudio.com/api/advanced-topics/using-proposed-api#sharing-extensions-using-the-proposed-api). The indexing won't change, but with `findFiles2`, git-excluded files can be omitted much faster in the preceding *scanning* process, resulting in less delay at every startup and possibly fixing unnecessary indexing.
 
@@ -49,6 +52,7 @@ Special characters other than "normal" letters are skipped, you can only search 
 
 ## Roadmap
 
+- Explore adding a file picker too to replace the default one which is also immensely slow
 - Several configuration options
 - Possible speed improvements, various TODOs in the code
 - Performance comparison (below)

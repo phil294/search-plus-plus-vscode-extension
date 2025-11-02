@@ -6,11 +6,16 @@ pause() {
     read -r -n 1 -s -p 'Press any key to continue. . .'
     echo
 }
-
-on_close() {
-    echo "module.exports = require('./src/extension')" > main.js # revert
+run() {
+    echo "Running: $*" >&2
+    while :; do
+        local status=0
+        bash -c "$*" || status=$?
+        [[ $status == 0 ]] && break
+        echo "Failed" >&2
+        read -r -n 1 -s -p 'Press any key to retry or Ctrl+C to exit'
+    done
 }
-trap on_close EXIT
 
 echo update readme
 pause
@@ -20,83 +25,82 @@ if ! [ -z "$(git status --porcelain)" ]; then
     # exit 1
 fi
 
-git push --tags origin master --dry-run
+run git push --tags origin master --dry-run
 
-# ### istexorbinary issue
-# npx ncu -u
-# npm i
-# git add package.json package-lock.json
-# git commit -m 'dependencies upgrade' ||:
-# echo ncu -u
-# pause
+# broken since somewhere between vsce 2.2.0 and 2.15.0
+# run npx vsce verify-pat
 # pause
 
-# main.js is different for bundle than for local testing, so we can skip the esbuild step in dev
-# but still keep the same entrypoint in package.json for both scenarios
-yarn esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode
-cp node_modules/node-sqlite3-wasm/dist/node-sqlite3-wasm.wasm .
+: ''
+run npx ncu -u
+run npm i
+run git add package.json package-lock.json
+run git commit -m 'dependencies upgrade' ||:
+echo 'deps upgraded'
+pause
+# '
 
-echo built
-echo manual tests:
+run npm run type-check
+
+run npm run lint
+
+echo built. manual tests:
 pause
 
 vscodium --extensionDevelopmentPath="$PWD" --disable-extensions
 pause
 pause
 
-# git fetch
-# changes=$(git log --reverse "$(git describe --tags --abbrev=0)".. --pretty=format:"%h___%B" |grep . |sed -E 's/^([0-9a-f]{6,})___(.)/- [`\1`](https:\/\/github.com\/phil294\/search++\/commit\/\1) \U\2/')
+git fetch
+changes=$(git log --reverse "$(git describe --tags --abbrev=0)".. --pretty=format:"%h___%B" |grep . |sed -E 's/^([0-9a-f]{6,})___(.)/- [`\1`](https:\/\/github.com\/phil294\/search++\/commit\/\1) \U\2/')
 
-# echo edit changelog
-# pause
-# changes=$(micro <<< "$changes")
-# [ -z "$changes" ] && exit 1
-# echo changes:
-# echo "$changes"
+echo edit changelog
+pause
+changes=$(micro <<< "$changes")
+[ -z "$changes" ] && exit 1
+echo changes:
+echo "$changes"
 
 version=$(npm version patch --no-git-tag-version)
-# version=0.0.2
 echo version: $version
 pause
 
-# sed -i $'/<!-- CHANGELOG_PLACEHOLDER -->/r'<(echo $'\n### '${version} $(date +"%Y-%m-%d")$'\n\n'"$changes") CHANGELOG.md
+sed -i $'/<!-- CHANGELOG_PLACEHOLDER -->/r'<(echo $'\n### '${version} $(date +"%Y-%m-%d")$'\n\n'"$changes") CHANGELOG.md
 
-# git add README.md
-# # git add CHANGELOG.md
-# git add package.json
-# git commit -m "$version"
-# git tag "$version"
-# echo 'patched package.json version patch, updated changelog, committed, tagged'
-# pause
+run git add README.md CHANGELOG.md package.json package-lock.json
+run git commit -m "$version"
+run git tag "$version"
+echo 'patched package.json version patch, updated changelog, committed, tagged'
+pause
 
-npx vsce package
+run npx vsce package
 vsix_file=$(ls -tr search-plusplus-*.vsix* |tail -1)
 mv "$vsix_file" vsix-out/"$vsix_file"
 vsix_file=vsix-out/"$vsix_file"
 echo $vsix_file
 
-xdg-open "$vsix_file"
+run xdg-open "${vsix_file@Q}"
 ls -hltr vsix-out
 ls -hltr
 echo 'check vsix package before publish'
 pause
 pause
 
-npx vsce publish
+run npx vsce publish
 echo 'vsce published'
 pause
 
-npx ovsx publish "$vsix_file" -p "$(cat ~/.open-vsx-access-token)"
+run npx ovsx publish "$vsix_file" -p "$(cat ~/.open-vsx-access-token)"
 echo 'ovsx published'
 pause
 
-git push --tags origin master
+run git push --tags origin master
 
-# if [[ -z $version || -z $changes || -z $vsix_file ]]; then
-#     echo version/changes empty
-#     exit 1
-# fi
-# echo 'will create github release'
-# pause
-# gh release create "$version" --target master --title "$version" --notes "$changes" --verify-tag "$vsix_file"
-# echo 'github release created'
+if [[ -z $version || -z $changes || -z $vsix_file ]]; then
+    echo version/changes empty
+    exit 1
+fi
+echo 'will create github release'
+pause
+run gh release create "$version" --target master --title "$version" --notes "${changes@Q}" --verify-tag "${vsix_file@Q}"
+echo 'github release created'

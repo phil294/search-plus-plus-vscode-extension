@@ -4,6 +4,7 @@ import neostandard from 'neostandard'
 export default
 neostandard({})
 	.concat([
+		{ ignores: ['.vscode/.history', 'todo*', 'node_modules', 'vsix-out'] },
 		{ files: ['**/*.js'], languageOptions: { sourceType: 'commonjs' } },
 		{ languageOptions: { globals: { ...globals.node } } },
 		{
@@ -21,6 +22,7 @@ neostandard({})
 				curly: ['error', 'multi'],
 				'nonblock-statement-body-position': ['error', 'below'],
 				'comma-dangle': ['error', 'always-multiline'],
+				'@stylistic/comma-dangle': 'off',
 				'func-style': ['error', 'declaration', { allowArrowFunctions: true }],
 				'arrow-body-style': ['error', 'as-needed'],
 				'no-return-assign': 'off',
@@ -38,6 +40,7 @@ neostandard({})
 				'promise/param-names': 'off',
 				'@stylistic/object-property-newline': 'off',
 				'@stylistic/operator-linebreak': 'off',
+				'no-void': 'off',
 			},
 		},
 	])

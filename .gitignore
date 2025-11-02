@@ -3,3 +3,4 @@ node_modules
 todo*
 vsix-out
 /node-sqlite3-wasm.wasm
+dist

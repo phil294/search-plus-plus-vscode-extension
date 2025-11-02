@@ -2,6 +2,7 @@ let vscode = require('vscode')
 const { log_debug, log_error, log_warn } = require('./log')
 const { readFile } = require('fs/promises')
 // https://github.com/bevry/istextorbinary/issues/307
+// @ts-ignore
 const { isBinary } = require('istextorbinary/edition-es2022/index.js')
 
 /** @typedef {import('./indexer').Indexer} Indexer */
@@ -42,7 +43,12 @@ class IndexQueue extends Map {
 				await this.indexer.index_docs(docs_batch)
 			} catch (e) {
 				// shouldn't throw because then is_running won't be unset, and errors, if any, are most likely to occur here
-				log_error('Indexing docs failed unexpectedly: ' + JSON.stringify(e))
+				log_error('Indexing docs failed unexpectedly: ', e.stack, e)
+				try {
+					this.indexer.db.exec('rollback')
+				} catch (ee) {
+					log_error('rollback on Indexing docs failed unexpectedly: ', ee.stack, ee)
+				}
 			}
 			docs_batch_bytes_read = 0
 			docs_batch = []
@@ -50,6 +56,7 @@ class IndexQueue extends Map {
 		let uri_i = -1
 		let skipped_path_EACCESS = ''
 		// TODO: configurable
+		// TODO: reeval
 		const read_group_size = 20 // 100 7sec, 20 8sec, 10 9sec, 1 12sec. 20 without logging 6sec. Mustn't be too big because reading and many files at the same time and keeping them in ram can be heavy on system resources
 		let entries = [...this.entries()]
 		for (let i = 0; i < entries.length; i += read_group_size) {

@@ -2,7 +2,14 @@
 todo*
 src
 node_modules
+!node_modules/node-sqlite3-wasm
+!node_modules/@vscode-elements/elements-lite/components/textfield/textfield.cs
+!node_modules/@vscode-elements/elements-lite/components/collapsible/collapsible.css
+!node_modules/vue/dist/vue.esm-browser.prod.js
+!node_modules/@vscode/codicons/dist/codicon.css
+!node_modules/@vscode/codicons/dist/codicon.ttf
 build.sh
+build.js
 release.sh
 img/demo*.png
 .gitignore
@@ -12,3 +19,4 @@ vsix-out
 **/*.d.ts
 eslint.config.js
 eslint.config.mjs
+main.js

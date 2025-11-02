@@ -7,16 +7,14 @@ const { Indexer } = require('./indexer')
 const { IndexQueue } = require('./index-queue')
 const { EXT_ID } = require('./global')
 const { find_files } = require('./find-files')
+const { readFileSync } = require('fs')
 
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
 
-/** This is the default value of fergiemcdowall/search-index plus underscore. SQLite FTS splits automatically,
+/** This is the default value of fergiemcdowall/search-index plus underscore. SQLite FTS splits automatically, TODO
 but we need it for search also. TODO: or do we? */
 const word_split_regex = /[\p{L}\d_]+/gu
-
-/** Too small and performance becomes a real problem */ // TODO: configurable
-const min_word_length = 3
 
 process.on('unhandledRejection', (/** @type any */ err) => {
 	log_error('unhandledRejection-handler', err)
@@ -33,7 +31,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		return
 	}
 
-	let indexer = new Indexer({ storage_uri: context.storageUri })
+	let indexer = new Indexer({ storage_uri: context.storageUri, word_split_regex })
 	let index_queue = new IndexQueue(indexer)
 
 	// order matters: right overwrites left
@@ -120,7 +118,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		let old_paths_need_deletion = old_meta_docs.filter(doc_meta =>
 			! new_docs_paths.has(doc_meta.path.toString()), // TODO: why tostring?
 		).map(d => d.path.toString())
-		log_debug('deleting docs no longer present', old_paths_need_deletion.slice(0,100), old_paths_need_deletion.length > 100 ? `... and ${old_paths_need_deletion.length - 100} more` : '')
+		log_debug('deleting docs no longer present', old_paths_need_deletion.slice(0, 100), old_paths_need_deletion.length > 100 ? `... and ${old_paths_need_deletion.length - 100} more` : '')
 		await indexer.delete_doc_by_path(...old_paths_need_deletion)
 
 		status_bar_item_command.text = ''
@@ -171,32 +169,50 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		if (exclude_config_keys.some(f => event.affectsConfiguration(f)))
 			return scan_debounced()
 	})
-	context.subscriptions.push(vscode.commands.registerCommand('search++.search', async () => {
-		log_debug('user initiated search')
-		let search_term = await vscode.window.showInputBox({
-			title: 'Search++',
-			prompt: 'Input search term',
-		})
-		if (! search_term)
-			return
 
-		let words = (search_term
-			.match(word_split_regex) || []) // TODO docs
-			.filter(word => word.length >= min_word_length) // TODO docs
-		if (! words.length)
-			return
-		let paths = await indexer.find_paths_by_multiple_partial_words(words)
-		log_debug('search result', paths)
-	}))
+	/** @type {vscode.WebviewView | null} */
+	let webview = null
+	context.subscriptions.push(vscode.window.registerWebviewViewProvider(EXT_ID, {
+		resolveWebviewView(/** @type {vscode.WebviewView} */ webview_view) {
+			webview = webview_view
+			webview_view.webview.options = {
+				enableScripts: true,
+				localResourceRoots: [
+					context.extensionUri,
+					vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview'),
+				],
+			}
+			webview_view.webview.html = readFileSync(context.asAbsolutePath('./src/webview.html'), 'utf-8')
+				.replace('<base href="{BASE_URL}" />', `<base href="${webview.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, '/'))}" />`)
 
-	// Side nav view setup
-	let tree_view = vscode.window.createTreeView(EXT_ID, {
-		treeDataProvider: {
-			getTreeItem: _ => _,
-			getChildren: () => [],
+			webview_view.webview.onDidReceiveMessage(async (message) => {
+				if (message.type === 'search') {
+					if (! message.query?.trim())
+						return webview?.webview.postMessage({ type: 'results', results: [], workspace_folders: [] })
+					let workspace_folders = (vscode.workspace.workspaceFolders || []).map(folder => ({
+						name: folder.name,
+						path: folder.uri.path,
+					}))
+					webview?.webview.postMessage({
+						type: 'results',
+						...await indexer.find_paths_with_lines_by_word(message.query, true, 1000), // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
+						workspace_folders,
+					})
+				} else if (message.type === 'open_file') {
+					let uri = vscode.Uri.file(message.path)
+					let doc = await vscode.window.showTextDocument(uri)
+					if (! message.line_number)
+						return
+					let line = message.line_number - 1
+					// TODO: col
+					let range = new vscode.Range(line, 0, line, 0)
+					// TODO: this doesn't work
+					doc.selection = new vscode.Selection(range.start, range.end)
+					doc.revealRange(range, vscode.TextEditorRevealType.InCenter)
+				}
+			})
 		},
-	})
-	context.subscriptions.push(tree_view)
+	}))
 
 	let status_bar_item_command = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left)
 	// status_bar_item_command.command = START_CMD
@@ -204,21 +220,91 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	status_bar_item_command.tooltip = 'Search++ extension'
 	status_bar_item_command.show()
 
+	// this pattern always shows the results but with a lower specificity than language-based providers,
+	// so they tend to show up lower than others. however with partial matches (while typing), there is a
+	// much higher chance of showing up at the top which is not ideal. This might be unavoidable because
+	// this very extension provides just *so many* results regardless of what you type.
+	// Tried several other patterns / args, this is the best I could come up with.
 	context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ pattern: '**' }, {
 		async provideCompletionItems(doc, pos) {
 			let word = (doc.getText(doc.getWordRangeAtPosition(pos)).match(word_split_regex) || [])[0]
 			log_debug('provideCompletionItems', word)
-			if (! word || word.length < min_word_length)
+			if (! word) // || word.length < min_word_length)
 				return
-			let dict = await indexer.autocomplete_word(word, 10000) // TODO configurable
+			let dict = await indexer.autocomplete_word(word, 2000) // TODO configurable
 			log_debug(`${dict.length} results`)
-			// TODO: configurable overall case sensitivity (which needs full re-index, and rm toLowerCase usages)
-			return dict.map(d => ({
-				label: d,
-				detail: 'Search++',
-			}))
+			return dict.map((d) => {
+				let item = new vscode.CompletionItem(String(d), vscode.CompletionItemKind.Text)
+				item.detail = 'Search++'
+				// item.sortText = 'zzz' + String(i).padStart(5, '0')
+				item.filterText = String(d)
+				return item
+			})
 		},
-		// resolveCompletionItem() {} TODO: look up paths where in use ordered by usage POG
+		async resolveCompletionItem(item) {
+			let word = typeof item.label === 'string' ? item.label : item.label.label
+			let limit = 250
+			let paths = await indexer.find_paths_by_word(word, limit) // TODO configurable
+			if (paths.length > 0) {
+				item.detail = `Search++ (found in ${paths.length} file${paths.length === 1 ? '' : 's'}${paths.length === limit ? ' (or more)' : ''})`
+
+				let workspace_folders = vscode.workspace.workspaceFolders || []
+				let relative_paths = paths.map(path => {
+					// find the workspace folder this file belongs to
+					let workspace_folder = null
+					let longest_match = 0
+					for (const folder of workspace_folders)
+						if (path.startsWith(folder.uri.path + '/') && folder.uri.path.length > longest_match) {
+							workspace_folder = folder
+							longest_match = folder.uri.path.length
+						}
+
+					if (! workspace_folder)
+						// fallback to absolute path
+						return path
+
+					let relative_path = path.substring(workspace_folder.uri.path.length + 1)
+					let parts = relative_path.split('/')
+					let filename = parts.pop()
+					let dir_path = parts.join('/')
+
+					return dir_path ? `${filename} • ${workspace_folder.name}/${dir_path}` : `${filename} • ${workspace_folder.name}`
+				})
+
+				item.documentation = new vscode.MarkdownString(`Found in:\n\`\`\`\n${relative_paths.join('\n')}\n\`\`\``)
+			}
+			return item
+		},
+	}))
+	let skip_definition_lookup = new Set()
+	// The ** matcher is very greedy and it seems to not be possible to lower its specificity, even with long delays,
+	// so VSCode would always wait for us and merge our often useless results with the precise results of advanced
+	// lsp providers. Therefore this definition lookup has a sub-lookup for the very same doc/pos inside (does VSCode
+	// cache this? or does this slow things down a lot?) to see if there are other providers present, and if so,
+	// skips providing any results. This seems to be the only way to be an actual fallback definition provider (?).
+	// https://stackoverflow.com/q/79807244/
+	context.subscriptions.push(vscode.languages.registerDefinitionProvider({ pattern: '**' }, {
+		async provideDefinition(doc, pos) {
+			let word = (doc.getText(doc.getWordRangeAtPosition(pos)).match(word_split_regex) || [])[0]
+			if (! word) // || word.length < min_word_length)
+				return
+			let definition_hash = doc.uri.toString() + ':' + pos.line + ':' + pos.character
+			if (skip_definition_lookup.has(definition_hash))
+				// avoid infinite loop
+				return void skip_definition_lookup.delete(definition_hash)
+			skip_definition_lookup.add(definition_hash)
+			let has_other_providers = await vscode.commands.executeCommand('vscode.executeDefinitionProvider', doc.uri, pos)
+			if (/** @type {any} */ (has_other_providers)?.length) // eslint-disable-line no-extra-parens
+				return
+			log_debug('provideDefinition', word)
+			let results = await indexer.find_paths_with_lines_by_word(word, false, 250)
+			return results.results.map(result => {
+				let uri = vscode.Uri.file(result.path)
+				return result.matches.map(({ line_number }) =>
+					new vscode.Location(uri, new vscode.Position(line_number - 1, 0)),
+				)
+			}).flat()
+		},
 	}))
 
 	// public api of this extension:

@@ -5,7 +5,7 @@
 	"icon": "img/logo.png",
 	"publisher": "phil294",
 	"private": false,
-	"license": "MIT",
+	"license": "GPL-3.0",
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/phil294/search++-vscode-extension"
@@ -19,9 +19,6 @@
 	"activationEvents": [
 		"onStartupFinished",
 		"TODO"
-	],
-	"extensionDependencies": [
-		"vscode.git"
 	],
 	"main": "./main.js",
 	"contributes": {
@@ -45,7 +42,7 @@
 		"views": {
 			"search-plusplus": [
 				{
-					"type": "tree",
+					"type": "webview",
 					"id": "search++",
 					"name": "Search++"
 				}
@@ -73,13 +70,16 @@
 	"enabledApiProposals": [
 		"findFiles2"
 	],
-	"scripts": {},
+	"scripts": {
+		"type-check": "tsc --noEmit",
+		"lint": "eslint . --report-unused-disable-directives --max-warnings 0"
+	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3.3.1",
 		"@eslint/js": "^9.37.0",
+		"@types/micromatch": "^4.0.10",
 		"@types/node": "^24.6.2",
 		"@types/vscode": "1.104.0",
-		"esbuild": "^0.25.10",
 		"eslint": "^9.37.0",
 		"eslint-plugin-n": "^17.23.1",
 		"eslint-plugin-promise": "^7.2.1",
@@ -90,9 +90,12 @@
 		"vsce": "^2.15.0"
 	},
 	"dependencies": {
+		"@vscode-elements/elements-lite": "^0.4.0",
+		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
 		"istextorbinary": "^9.5.0",
 		"micromatch": "^4.0.8",
-		"node-sqlite3-wasm": "^0.8.49"
+		"node-sqlite3-wasm": "^0.8.49",
+		"vue": "^3.5.22"
 	}
 }

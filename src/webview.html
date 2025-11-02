@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<!-- This file is 99% ai generated -->
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<base href="{BASE_URL}" />
+	<script type="importmap">{ "imports": { "vue": "./node_modules/vue/dist/vue.esm-browser.prod.js" }}</script>
+	<link rel="stylesheet" href="node_modules/@vscode-elements/elements-lite/components/textfield/textfield.css">
+	<link rel="stylesheet" href="node_modules/@vscode-elements/elements-lite/components/collapsible/collapsible.css">
+	<link rel="stylesheet" href="node_modules/@vscode/codicons/dist/codicon.css">
+	<style>
+		@font-face {
+			font-family: "codicon";
+			font-display: block;
+			src: url("node_modules/@vscode/codicons/dist/codicon.ttf") format("truetype");
+		}
+
+		::highlight(search-match) {
+			background-color: var(--vscode-editor-findMatchHighlightBackground);
+			color: var(--vscode-editor-findMatchHighlightForeground, inherit);
+		}
+
+		body {
+			padding: 0;
+			margin: 0;
+			color: var(--vscode-foreground);
+			font-family: var(--vscode-font-family);
+			font-size: var(--vscode-font-size);
+		}
+		.search-container {
+			padding: 8px;
+		}
+		.search-input {
+			width: 100%;
+		}
+		.results-container {
+			padding: 0;
+			margin: 0;
+		}
+		.no-results {
+			padding: 8px;
+		}
+		.result-count {
+			padding: 4px 8px;
+			color: var(--vscode-descriptionForeground);
+			font-size: 12px;
+		}
+		.vscode-collapsible {
+			margin: 0;
+			border: none;
+		}
+		.vscode-collapsible summary {
+			display: flex;
+			align-items: center;
+			padding: 0;
+			cursor: pointer;
+			list-style: none;
+		}
+		.vscode-collapsible summary:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.vscode-collapsible summary::-webkit-details-marker {
+			display: none;
+		}
+		.icon-arrow {
+			margin-right: 4px;
+			font-size: 14px;
+			transition: transform 0.1s;
+		}
+		.vscode-collapsible[open] .icon-arrow {
+			transform: rotate(90deg);
+		}
+		.file-icon {
+			margin-right: 6px;
+			font-size: 16px;
+		}
+		.file-name {
+			font-weight: normal;
+			font-size: 13px;
+		}
+		.file-path {
+			margin-left: 6px;
+			color: var(--vscode-descriptionForeground);
+			font-size: 12px;
+		}
+		.match-line {
+			padding: 2px 8px 2px 32px;
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+		}
+		.match-line:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.line-number {
+			color: var(--vscode-descriptionForeground);
+			margin: 0 4px 0 7px;
+			min-width: 40px;
+			opacity: .7;
+			font-size: .9em;
+		}
+		.line-text {
+			flex: 1;
+		}
+		.file-name, .file-path, .line-text {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	</style>
+</head>
+<body>
+	<div id="app">
+		<div class="search-container">
+			<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" placeholder="Search..." autocomplete="off" ref="search_input" />
+		</div>
+		<div v-if="result_count_text" class="result-count">{{ result_count_text }}</div>
+		<div class="results-container">
+			<div v-if="! results.length && search_query.trim()" class="no-results">
+				No results found.
+			</div>
+			<details v-for="item in results" :key="item.path" class="vscode-collapsible" open>
+				<summary>
+					<i class="codicon codicon-chevron-right icon-arrow"></i>
+					<i :class="'codicon codicon-' + get_file_icon(item.path) + ' file-icon'"></i>
+					<span class="file-name">{{ get_file_name(item.path) }}</span>
+					<span class="file-path">{{ get_dir_path(item.path) }}</span>
+				</summary>
+				<div>
+					<div v-for="match in item.matches" :key="match.line_number" class="match-line" @click="open_file(item.path, match.line_number)">
+						<span class="line-number">{{ match.line_number }}</span>
+						<span class="line-text" :title="match.line_text">{{ match.line_text.trim() }}</span>
+					</div>
+				</div>
+			</details>
+		</div>
+	</div>
+
+	<script type="module">
+		import { createApp, ref, computed, onMounted, nextTick } from 'vue'
+		const vscode = acquireVsCodeApi()
+		createApp({
+			setup() {
+				const search_query = ref(localStorage.getItem('search_query') || '')
+				const results = ref([])
+				const has_more = ref(false)
+				const workspace_folders = ref([])
+				const search_input = ref(null)
+				let search_debouncer = null
+
+				const result_count_text = computed(() => {
+					if (! results.value.length) return ''
+					const total_matches = results.value.reduce((sum, item) => sum + item.matches.length, 0)
+					return total_matches + ' match' + (total_matches === 1 ? '' : 'es') +
+						' in ' + results.value.length + ' file' + (results.value.length === 1 ? '' : 's') +
+						(has_more.value ? ' (truncated, please refine your search)' : '')
+				})
+
+				const on_search_input = () => {
+					clearTimeout(search_debouncer)
+					search_debouncer = setTimeout(() => {
+						localStorage.setItem('search_query', search_query.value)
+						vscode.postMessage({
+							type: 'search',
+							query: search_query.value
+						})
+					}, 30)
+				}
+
+				const get_file_icon = (file_path) => ({
+					'js': 'symbol-method',
+					'ts': 'symbol-method',
+					'json': 'symbol-namespace',
+					'md': 'markdown',
+					'html': 'symbol-keyword',
+					'css': 'symbol-color',
+					'py': 'symbol-method',
+					'java': 'symbol-method',
+					'cpp': 'symbol-method',
+					'c': 'symbol-method',
+					'h': 'symbol-method',
+					'rs': 'symbol-method',
+					'go': 'symbol-method',
+					'rb': 'symbol-method',
+					'php': 'symbol-method',
+					'sh': 'terminal',
+					'yml': 'symbol-namespace',
+					'yaml': 'symbol-namespace',
+					'xml': 'symbol-keyword',
+					'svg': 'file-media',
+					'png': 'file-media',
+					'jpg': 'file-media',
+					'jpeg': 'file-media',
+					'gif': 'file-media',
+				})[file_path.split('.').pop().toLowerCase()] || 'file'
+
+				const get_file_name = (path) =>
+					path.split('/').pop()
+
+				const get_dir_path = (path) => {
+					// Find the workspace folder this file belongs to
+					let workspace_folder = null
+					let longest_match = 0
+					for (const folder of workspace_folders.value) {
+						if (path.startsWith(folder.path + '/') && folder.path.length > longest_match) {
+							workspace_folder = folder
+							longest_match = folder.path.length
+						}
+					}
+					if (! workspace_folder) {
+						const parts = path.split('/')
+						parts.pop()
+						return parts.join('/')
+					}
+					let relative_path = path.substring(workspace_folder.path.length + 1)
+					const parts = relative_path.split('/')
+					parts.pop()
+					const relative_dir = parts.join('/')
+					return relative_dir ? `${workspace_folder.name} • ${relative_dir}` : workspace_folder.name
+				}
+				const open_file = (path, line_number) =>
+					vscode.postMessage({
+						type: 'open_file',
+						path: path,
+						line_number: line_number
+					})
+				const highlight_search_terms = () => {
+					if (! search_query.value.trim() || ! CSS.highlights) {
+						CSS.highlights?.clear()
+						return
+					}
+					CSS.highlights.clear()
+					const ranges = []
+					const search_terms_lower = search_query.value.trim().split(/\s+/).filter(Boolean).map(t => t.toLowerCase())
+					const line_elements = document.querySelectorAll('.line-text')
+					line_elements.forEach(element => {
+						const text = element.textContent
+						if (! text) return
+						const lower_text = text.toLowerCase()
+						search_terms_lower.forEach(term => {
+							let index = 0
+							while ((index = lower_text.indexOf(term, index)) !== -1) {
+								const range = new Range()
+								const text_node = element.firstChild
+								if (text_node && text_node.nodeType === Node.TEXT_NODE) {
+									range.setStart(text_node, index)
+									range.setEnd(text_node, index + term.length)
+									ranges.push(range)
+								}
+								index += term.length
+							}
+						})
+					})
+					if (ranges.length > 0) {
+						const highlight = new Highlight(...ranges)
+						CSS.highlights.set('search-match', highlight)
+					}
+				}
+				window.addEventListener('message', (event) => {
+					const message = event.data
+					if (message.type === 'results') {
+						results.value = message.results
+						has_more.value = message.has_more
+						workspace_folders.value = message.workspace_folders || []
+						nextTick().then(highlight_search_terms)
+					}
+				})
+				onMounted(() => {
+					search_input.value?.focus()
+					if (search_query.value.trim())
+						on_search_input()
+				})
+				return { search_query, results, has_more, result_count_text, search_input, on_search_input, get_file_icon, get_file_name, get_dir_path, open_file }
+			}
+		}).mount('#app')
+	</script>
+</body>
+</html>

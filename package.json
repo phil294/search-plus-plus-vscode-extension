@@ -76,16 +76,16 @@
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3.3.1",
-		"@eslint/js": "^9.37.0",
+		"@eslint/js": "^9.39.0",
 		"@types/micromatch": "^4.0.10",
-		"@types/node": "^24.6.2",
-		"@types/vscode": "1.104.0",
-		"eslint": "^9.37.0",
+		"@types/node": "^24.9.2",
+		"@types/vscode": "1.105.0",
+		"eslint": "^9.39.0",
 		"eslint-plugin-n": "^17.23.1",
 		"eslint-plugin-promise": "^7.2.1",
-		"globals": "^16.4.0",
+		"globals": "^16.5.0",
 		"neostandard": "^0.12.2",
-		"npm-check-updates": "^19.0.0",
+		"npm-check-updates": "^19.1.2",
 		"ovsx": "^0.10.6",
 		"vsce": "^2.15.0"
 	},
@@ -95,7 +95,7 @@
 		"@vscode/dts": "^0.4.1",
 		"istextorbinary": "^9.5.0",
 		"micromatch": "^4.0.8",
-		"node-sqlite3-wasm": "^0.8.49",
+		"node-sqlite3-wasm": "^0.8.50",
 		"vue": "^3.5.22"
 	}
 }

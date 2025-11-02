@@ -98,7 +98,7 @@ The persistence layer is currently implemented using SQLite3's WASM build and it
 
 ## Contributing
 
-Please open issues in the [GitHub Repository](https://github.com/phil294/search++-vscode-extension) for feedback, bugs and feature requests.
+Please open issues in the [GitHub Repository](https://github.com/phil294/search-plus-plus-vscode-extension) for feedback, bugs and feature requests.
 
 ## Debugging
 

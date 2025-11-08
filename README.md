@@ -20,7 +20,7 @@ For all text files, regardless of language.
 
 ## Usage
 
-You can **install the extension in VSCode from [here](https://marketplace.visualstudio.com/items?itemName=phil294.search++)** or [here](https://open-vsx.org/extension/phil294/search++).
+You can **install the extension in VSCode from [the marketplace here](https://marketplace.visualstudio.com/items?itemName=phil294.search-plusplus)** or [Open VSX here](https://open-vsx.org/extension/phil294/search-plusplus).
 
 <!-- There are several configuration options, but you don't have to configure anything. -->
 

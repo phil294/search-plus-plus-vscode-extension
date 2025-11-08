@@ -11,9 +11,13 @@ Features:
 
 images coming soon
 
-1. Instant alternative Search panel
-1. Instant text-based Autocomplete
-1. Instant text-based Go to definition fallback
+1. Instant alternative Search panel<br>
+   <img width="495" height="284" alt="image" src="https://github.com/user-attachments/assets/b0ae1e49-dd6c-4f92-8497-081a6c7501f3" />
+1. Instant text-based Autocomplete<br>
+   <img width="1097" height="299" alt="image" src="https://github.com/user-attachments/assets/ef994053-456d-4b48-85e0-d2f91a989614" />
+1. Instant text-based Go to definition fallback<br>
+   <img width="745" height="235" alt="image" src="https://github.com/user-attachments/assets/59d82ee5-7c87-4a84-aa95-f24d0c9bcfc7" />
+
 1. (Not yet implemented: Instant File picker)
 
 For all text files, regardless of language.

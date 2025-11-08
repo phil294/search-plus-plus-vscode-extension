@@ -11,7 +11,7 @@
 		"url": "https://github.com/phil294/search++-vscode-extension"
 	},
 	"engines": {
-		"vscode": "^1.47.0"
+		"vscode": "^1.104.0"
 	},
 	"categories": [
 		"Other"
@@ -73,12 +73,12 @@
 	},
 	"devDependencies": {
 		"@eslint/eslintrc": "^3.3.1",
-		"@eslint/js": "^9.39.0",
+		"@eslint/js": "^9.39.1",
 		"@types/micromatch": "^4.0.10",
-		"@types/node": "^24.9.2",
-		"@types/vscode": "1.47.0",
+		"@types/node": "^24.10.0",
+		"@types/vscode": "1.104.0",
 		"esbuild": "^0.25.12",
-		"eslint": "^9.39.0",
+		"eslint": "^9.39.1",
 		"eslint-plugin-n": "^17.23.1",
 		"eslint-plugin-promise": "^7.2.1",
 		"globals": "^16.5.0",
@@ -92,7 +92,7 @@
 		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
 		"micromatch": "^4.0.8",
-		"node-sqlite3-wasm": "^0.8.50",
-		"vue": "^3.5.22"
+		"node-sqlite3-wasm": "^0.8.51",
+		"vue": "^3.5.24"
 	}
 }

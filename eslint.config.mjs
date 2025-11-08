@@ -4,7 +4,7 @@ import neostandard from 'neostandard'
 export default
 neostandard({})
 	.concat([
-		{ ignores: ['.vscode/.history', 'todo*', 'node_modules', 'vsix-out'] },
+		{ ignores: ['.vscode/.history', 'todo*', 'node_modules', 'vsix-out', 'src/lib'] },
 		{ files: ['**/*.js'], languageOptions: { sourceType: 'commonjs' } },
 		{ languageOptions: { globals: { ...globals.node } } },
 		{

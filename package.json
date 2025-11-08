@@ -1,7 +1,7 @@
 {
 	"name": "search-plusplus",
 	"description": "A fast, indexed full text search VSCode extension, with optional intellisense",
-	"version": "0.0.3",
+	"version": "0.0.4",
 	"icon": "img/logo.png",
 	"publisher": "phil294",
 	"private": false,
@@ -67,9 +67,6 @@
 			}
 		}
 	},
-	"enabledApiProposals": [
-		"findFiles2"
-	],
 	"scripts": {
 		"type-check": "tsc --noEmit",
 		"lint": "eslint . --report-unused-disable-directives --max-warnings 0"
@@ -79,7 +76,8 @@
 		"@eslint/js": "^9.39.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^24.9.2",
-		"@types/vscode": "1.105.0",
+		"@types/vscode": "1.47.0",
+		"esbuild": "^0.25.12",
 		"eslint": "^9.39.0",
 		"eslint-plugin-n": "^17.23.1",
 		"eslint-plugin-promise": "^7.2.1",
@@ -93,7 +91,6 @@
 		"@vscode-elements/elements-lite": "^0.4.0",
 		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
-		"istextorbinary": "^9.5.0",
 		"micromatch": "^4.0.8",
 		"node-sqlite3-wasm": "^0.8.50",
 		"vue": "^3.5.22"

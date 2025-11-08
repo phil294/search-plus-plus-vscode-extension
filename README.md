@@ -40,7 +40,7 @@ All searches are performed case insensitive, results are case preserving.
 
 Everything has been optimized for very large repositories. Behemoths like Chromium source (more than 350,000 indexable files) take about one hour for the initial indexing. There's still definitely room for indexing speed improvements, but once the onetime indexing is done, everything behaves instantaneously forever.
 
-In some very large projects like these with many `.gitignore` files, there might be too much delay at startup and possibly unnecessary indexing. This is because we're still waiting for VSCode's new `findFiles2` proposal to be stabilized: https://github.com/microsoft/vscode/issues/48674. If you want to speed things up, you can enable the proposed extension API `findFiles2` if you wan't, but it's [rather tricky](https://code.visualstudio.com/api/advanced-topics/using-proposed-api#sharing-extensions-using-the-proposed-api). The indexing won't change, but with `findFiles2`, git-excluded files can be omitted much faster in the preceding *scanning* process, resulting in less delay at every startup and possibly fixing unnecessary indexing.
+In some very large projects like these with many `.gitignore` files, there might be too much delay at startup and possibly unnecessary indexing. This is because we're still waiting for VSCode's new `findFiles2` proposal to be stabilized: https://github.com/microsoft/vscode/issues/48674. The indexing won't change, but with `findFiles2`, git-excluded files can be omitted much faster in the preceding *scanning* process, resulting in less delay at every startup and possibly fixing unnecessary indexing.
 
 <!-- ## asdf
 
@@ -111,7 +111,6 @@ There's a verbose log in `Output` > `Search++`. TODO: make optional
 ## Building
 
 - `npm install`
-- You need to modify some tricky code inside `node_modules` currently, see: https://github.com/bevry/istextorbinary/issues/307
 - The extension does not use any sort of bundler for development or release. Just run it with the included launch script.
 
 ## Notable dependencies

@@ -1,9 +1,7 @@
 let vscode = require('vscode')
-const { log_debug, log_error, log_warn } = require('./log')
-const { readFile } = require('fs/promises')
-// https://github.com/bevry/istextorbinary/issues/307
-// @ts-ignore
-const { isBinary } = require('istextorbinary/edition-es2022/index.js')
+let { log_debug, log_error, log_warn } = require('./log')
+let { readFile } = require('fs/promises')
+let { isBinary } = require('./lib/istextorbinary')
 
 /** @typedef {import('./indexer').Indexer} Indexer */
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */

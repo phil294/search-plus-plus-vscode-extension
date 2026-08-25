@@ -6,6 +6,9 @@
     "src/lib"
   ],
   "compilerOptions": {
+    "types": [
+      "node"
+    ],
     "baseUrl": ".",
     // "paths": {
     // },

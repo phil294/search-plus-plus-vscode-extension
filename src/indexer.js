@@ -32,7 +32,7 @@ module.exports.Indexer = class {
 			mkdirSync(index_path, { recursive: true })
 		log_debug('search index: ' + index_path)
 
-		let db_path = path.join(index_path, 'index2.db') // version bump after scheme change
+		let db_path = path.join(index_path, 'index4.db') // version bump after scheme change
 		this.db = new Database(db_path)
 
 		try {
@@ -73,8 +73,7 @@ module.exports.Indexer = class {
 		for case-insensitive lookup
 		and also needs the results case sensitive, for which you need an extra table because sqlite fts5 can't do both.
 		go-to needs full words also.
-		like prefix% is too slow on large data, even with index. fts is necessary for this.
-		fts is also necessary for partial matches, trigram tokenizer for search function.
+		fts trigram necessary for partial matches (search).
 		*/
 		this.db.exec(`
 			pragma journal_mode = wal;
@@ -83,8 +82,6 @@ module.exports.Indexer = class {
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
 			create index if not exists idx_file_content_word on file_content(word);
 			create index if not exists idx_file_content_word_lower on file_content(word_lower);
-			create virtual table if not exists file_content_search_index_fts using FTS5(text, content='', contentless_delete=1);
-			create virtual table if not exists file_content_search_index_fts_v using fts5vocab('file_content_search_index_fts', 'col');
 			create virtual table if not exists file_content_search_index_fts_trigram using FTS5(text, content='', tokenize='trigram', contentless_delete=1);
 		`)
 	}
@@ -100,8 +97,6 @@ module.exports.Indexer = class {
 		let new_ids = this.db.all(`select id, path from file where path in (${single_qmarks_paths})`, paths)
 		let new_id_by_path = new_ids.reduce((/** @type {Record<string, string>} */ all, { id, path }) => { all[String(path)] = String(id); return all }, {})
 		// This makes the text be split by FTS internally
-		this.db.run(`insert into file_content_search_index_fts (rowid, text) values ${double_qmarks_paths}`, docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
-		// this also, but trigram
 		this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_paths}`, docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
 		// And this requires manual splitting. We need both due to
 		// case presevation, unfortunately.
@@ -113,6 +108,8 @@ module.exports.Indexer = class {
 		// let total_words = docs_with_words.reduce((sum, doc) => sum + doc.words.length, 0)
 		// let double_qmarks_words = new Array(total_words).fill('(?,?)').join(',')
 		// this.db.run(`insert or ignore into file_content (file_id, word) values ${double_qmarks_words}`,
+		// we need to store both as sqlite's case insensitivity is purely ascii-based unless you install icu
+		// which is not included in (and probably pretty hard with) wasm
 		let path_words = docs_with_words.map(doc => doc.words.map(word => [new_id_by_path[doc.path] || '??', word, word.toLowerCase()])).flat(2)
 		const file_content_insert_words_chunk_size = 3 * 30 // TODO: configure / find fastest. too large and ui lags a lot
 		log_debug(`Inserting total ${path_words.length} words = ${Math.ceil(path_words.length / file_content_insert_words_chunk_size)} chunks into file_content`)
@@ -130,8 +127,6 @@ module.exports.Indexer = class {
 		let single_qmarks = new Array(paths.length).fill('?').join(',')
 		let old_ids = this.db.all(`select id from file where path in (${single_qmarks})`, paths).map(r => String(r.id))
 		this.db.run(`delete from file where path in (${single_qmarks})`, paths)
-		this.db.run('delete from file_content_search_index_fts where rowid in (' +
-			new Array(old_ids.length).fill('?').join(',') + ')', old_ids)
 		this.db.run('delete from file_content_search_index_fts_trigram where rowid in (' +
 			new Array(old_ids.length).fill('?').join(',') + ')', old_ids)
 	}
@@ -157,10 +152,15 @@ module.exports.Indexer = class {
 		// let words = this.db.all('select word from file_content_search_index_fts_trigram_v fts_v left join file_content on fts_v.term = file_content.word_lower and fts_v.rowid = file_content.file_id where term glob ? order by cnt desc limit ?',
 		// and this doesn't work because of trigram tokenizer, `term` is just three-letter words.
 		// let words = this.db.all('select term from file_content_search_index_fts_trigram_v fts_v where term glob ? order by cnt desc limit ?',
-		let words = this.db.all('select distinct file_content.word from file_content_search_index_fts_v fts_v left join file_content on fts_v.term = file_content.word_lower where fts_v.term glob ? order by fts_v.cnt desc limit ?',
+		// vocab/non-trigram not necessary as file_content has indexed prefix lookups
+		// let words = this.db.all('select distinct file_content.word from file_content_search_index_fts_v fts_v left join file_content on fts_v.term = file_content.word_lower where fts_v.term glob ? order by fts_v.cnt desc limit ?',
 		// let words = this.db.all('select term from file_content_search_index_fts_v fts_v where term glob ? order by cnt desc limit ?',
+		// 	[word.toLowerCase() + '*', limit])
+		// 	// .map(r => r.term)
+		// 	.map(r => r.word)
+		// orders by document frequency (!)
+		let words = this.db.all('select word from file_content where word_lower glob ? group by word order by count(*) desc limit ?',
 			[word.toLowerCase() + '*', limit])
-			// .map(r => r.term)
 			.map(r => r.word)
 		log_debug(`autocomplete search time: ${(Date.now() - start) / 1000} seconds`)
 		return words

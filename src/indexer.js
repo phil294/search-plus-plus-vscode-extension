@@ -1,6 +1,8 @@
 let path = require('path')
 const { mkdirSync, existsSync, rmSync, readFileSync } = require('fs')
+const micromatch = require('micromatch')
 const { log_debug, log_error, log_warn } = require('./log')
+const { word_split_regex } = require('./global')
 const { Database } = require('node-sqlite3-wasm')
 
 /**
@@ -8,12 +10,13 @@ const { Database } = require('node-sqlite3-wasm')
  * @property {string} path
  * @property {number} mtime
  * @property {number} size
+ * @property {boolean} [index_content] `false` records the file name-only (gitignored files, shown in the picker but not content-indexed). Defaults to indexed.
  */
 
 /**
  * @typedef {object} IndexDoc
  * @property {string} path
- * @property {string} text
+ * @property {string|null} text `null` means the file is recorded but its contents are not indexed (binary/oversized).
  * @property {number} mtime
  */
 
@@ -23,11 +26,11 @@ const { Database } = require('node-sqlite3-wasm')
  * @property {number} mtime
  */
 
-/** wrapper around sqlite3 fts wasm */
+/** wrapper around sqlite3 fts wasm. Owned by the indexing worker thread (single db connection). */
 module.exports.Indexer = class {
-	constructor(/** @type {{storage_uri:import('vscode').Uri, word_split_regex:RegExp}} */ { storage_uri, word_split_regex }) {
+	constructor(/** @type {{storage_path:string}} */ { storage_path }) {
 		this.word_split_regex = word_split_regex
-		let index_path = path.join(storage_uri.fsPath, 'index')
+		let index_path = path.join(storage_path, 'index')
 		if (! existsSync(index_path))
 			mkdirSync(index_path, { recursive: true })
 		log_debug('search index: ' + index_path)
@@ -78,6 +81,8 @@ module.exports.Indexer = class {
 		this.db.exec(`
 			pragma journal_mode = wal;
 			pragma foreign_keys = on;
+			pragma synchronous = normal;
+			pragma temp_store = memory;
 			create table if not exists file(id integer primary key autoincrement, path text unique, mtime number);
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
 			create index if not exists idx_file_content_word on file_content(word);
@@ -96,27 +101,43 @@ module.exports.Indexer = class {
 		this.db.run(`insert into file (path, mtime) values ${double_qmarks_paths}`, docs.map(d => [d.path, d.mtime]).flat())
 		let new_ids = this.db.all(`select id, path from file where path in (${single_qmarks_paths})`, paths)
 		let new_id_by_path = new_ids.reduce((/** @type {Record<string, string>} */ all, { id, path }) => { all[String(path)] = String(id); return all }, {})
-		// This makes the text be split by FTS internally
-		this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_paths}`, docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
-		// And this requires manual splitting. We need both due to
-		// case presevation, unfortunately.
-		let docs_with_words = docs.map(doc => ({
-			path: doc.path,
-			words: [...new Set((doc.text.match(this.word_split_regex) || [])
-				.filter(w => w.length >= 3))], // TODO: config
-		}))
-		// let total_words = docs_with_words.reduce((sum, doc) => sum + doc.words.length, 0)
-		// let double_qmarks_words = new Array(total_words).fill('(?,?)').join(',')
-		// this.db.run(`insert or ignore into file_content (file_id, word) values ${double_qmarks_words}`,
-		// we need to store both as sqlite's case insensitivity is purely ascii-based unless you install icu
-		// which is not included in (and probably pretty hard with) wasm
-		let path_words = docs_with_words.map(doc => doc.words.map(word => [new_id_by_path[doc.path] || '??', word, word.toLowerCase()])).flat(2)
-		const file_content_insert_words_chunk_size = 3 * 30 // TODO: configure / find fastest. too large and ui lags a lot
-		log_debug(`Inserting total ${path_words.length} words = ${Math.ceil(path_words.length / file_content_insert_words_chunk_size)} chunks into file_content`)
-		for (let i = 0; i < path_words.length; i += file_content_insert_words_chunk_size) {
-			let words_chunk = path_words.slice(i, i + file_content_insert_words_chunk_size)
-			let triple_qmarks_words = new Array(words_chunk.length / 3).fill('(?,?,?)').join(',')
-			this.db.run(`insert or ignore into file_content (file_id, word, word_lower) values ${triple_qmarks_words}`, words_chunk)
+		// Only docs with actual text content get their contents indexed. Binary/oversized files
+		// (text === null) are still recorded above as file rows only, so the file picker can link
+		// to them and so they are not rescanned every time.
+		let content_docs = docs.filter(doc => doc.text != null)
+		if (content_docs.length) {
+			let double_qmarks_content = new Array(content_docs.length).fill('(?,?)').join(',')
+			// This makes the text be split by FTS internally
+			this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_content}`, content_docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
+			// And this requires manual splitting. We need both due to
+			// case presevation, unfortunately.
+			let docs_with_words = content_docs.map(doc => ({
+				path: doc.path,
+				words: [...new Set((String(doc.text).match(this.word_split_regex) || [])
+					.filter(w => w.length >= 3))], // TODO: config
+			}))
+			// let total_words = docs_with_words.reduce((sum, doc) => sum + doc.words.length, 0)
+			// let double_qmarks_words = new Array(total_words).fill('(?,?)').join(',')
+			// this.db.run(`insert or ignore into file_content (file_id, word) values ${double_qmarks_words}`,
+			// we need to store both as sqlite's case insensitivity is purely ascii-based unless you install icu
+			// which is not included in (and probably pretty hard with) wasm
+			let rows = docs_with_words.flatMap(doc => doc.words.map(word => [new_id_by_path[doc.path] || '??', word, word.toLowerCase()]))
+			// Reusing ONE prepared multi-row insert is dramatically faster than re-preparing a fresh
+			// statement per chunk: statement preparation (not the actual b-tree insert) dominated indexing
+			// time on word-heavy files (e.g. a single .po batch stalled minutes). 500 rows stays well below
+			// SQLite's bound-parameter limit while minimising WASM round-trips.
+			const rows_per_chunk = 500
+			log_debug(`Inserting total ${rows.length} words = ${Math.ceil(rows.length / rows_per_chunk)} chunks into file_content`)
+			let full_chunks = Math.floor(rows.length / rows_per_chunk)
+			if (full_chunks) {
+				let stmt = this.db.prepare(`insert or ignore into file_content (file_id, word, word_lower) values ${new Array(rows_per_chunk).fill('(?,?,?)').join(',')}`)
+				for (let i = 0; i < full_chunks; i++)
+					stmt.run(rows.slice(i * rows_per_chunk, (i + 1) * rows_per_chunk).flat())
+				stmt.finalize()
+			}
+			let remainder = rows.slice(full_chunks * rows_per_chunk)
+			if (remainder.length)
+				this.db.run(`insert or ignore into file_content (file_id, word, word_lower) values ${new Array(remainder.length).fill('(?,?,?)').join(',')}`, remainder.flat())
 		}
 		// TODO: insert into fts(fts) values ('optimize')
 		// other optimize..?
@@ -139,6 +160,11 @@ module.exports.Indexer = class {
 			row.mtime = Number(row.mtime)
 		// TODO: indexdoc has a .text prop ...?
 		return /** @type {IndexDoc[]} */ (rows) // eslint-disable-line no-extra-parens
+	}
+
+	/** every recorded file path, including binary/oversized files (used by the file picker). */
+	all_file_paths() {
+		return this.db.all('select path from file').map(r => String(r.path))
 	}
 
 	autocomplete_word(/** @type string */ word, /** @type number */ limit) {
@@ -175,7 +201,7 @@ module.exports.Indexer = class {
 		return paths.map(p => String(p))
 	}
 
-	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit) {
+	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
 		let start = Date.now()
 		// TODO: escape, also below
@@ -188,6 +214,8 @@ module.exports.Indexer = class {
 			words = word.split(/\s+/).map(w => w.toLowerCase())
 		} else
 			paths = this.find_paths_by_word(word, limit)
+
+		paths = filter_paths(paths, filter)
 
 		let words_lower = words.map(w => w.toLowerCase())
 
@@ -210,7 +238,7 @@ module.exports.Indexer = class {
 					if (words_lower.every(word => line_lower.includes(word))) {
 						matches.push({
 							line_number: i + 1,
-							line_text: line.slice(0, 100),
+							line_text: line_preview(line, words_lower),
 						})
 						total_matches++
 						if (total_matches >= limit)
@@ -232,4 +260,71 @@ module.exports.Indexer = class {
 		log_debug(`find matches with lines time: ${(Date.now() - start) / 1000} seconds, ${results.length} files with matches, ${total_matches} total matches`)
 		return { results, has_more: total_matches >= limit }
 	}
+}
+
+/** Turns one user-entered "files to include/exclude" token into an array of micromatch globs,
+ * approximating VSCode's search behaviour (segment names, filename globs, bare extensions). */
+function expand_glob(/** @type string */ token) {
+	token = token.trim()
+	if (! token)
+		return []
+	if (token.startsWith('./'))
+		token = token.slice(2)
+	else if (token.startsWith('/'))
+		token = token.slice(1)
+	if (token.includes('/'))
+		return [token, token.endsWith('/') ? token + '**' : token + '/**']
+	// no slash: a folder/file segment name and/or a filename glob
+	if (token.includes('*'))
+		return ['**/' + token]
+	let globs = ['**/' + token + '/**', '**/' + token]
+	if (token.startsWith('.'))
+		// bare extension like ".js" -> match any file ending in it
+		globs.push('**/*' + token)
+	return globs
+}
+
+function line_preview(/** @type string */ line, /** @type string[] */ words_lower) {
+	// strip leading whitespace (matches VS Code's search result preview)
+	let trimmed = line.replace(/^\s+/, '')
+	let lower = trimmed.toLowerCase()
+	// find the earliest match position among all search words
+	let first = -1
+	for (let word of words_lower) {
+		let idx = lower.indexOf(word)
+		if (idx !== -1 && (first === -1 || idx < first))
+			first = idx
+	}
+	// if there is a lot of text before the first match, show at most 27 chars
+	// of leading context prefixed with an ellipsis so the match stays visible
+	const max_before = 27
+	let preview = first > max_before ? '...' + trimmed.slice(first - max_before) : trimmed
+	// cap length so huge minified/bundled lines can't overwhelm the webview
+	return preview.slice(0, 1000)
+}
+
+function relativize(/** @type string */ p, /** @type {string[]|undefined} */ roots) {
+	let best = ''
+	for (let root of roots || [])
+		if ((p === root || p.startsWith(root + '/')) && root.length > best.length)
+			best = root
+	if (best)
+		return p.slice(best.length + 1)
+	let idx = p.lastIndexOf('/')
+	return idx === -1 ? p : p.slice(idx + 1)
+}
+
+function filter_paths(/** @type string[] */ paths, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ { include, exclude, roots } = {}) {
+	let include_globs = (include || []).flatMap(expand_glob)
+	let exclude_globs = (exclude || []).flatMap(expand_glob)
+	if (! include_globs.length && ! exclude_globs.length)
+		return paths
+	return paths.filter(p => {
+		let rel = relativize(p, roots)
+		if (include_globs.length && ! micromatch.isMatch(rel, include_globs, { dot: true }))
+			return false
+		if (exclude_globs.length && micromatch.isMatch(rel, exclude_globs, { dot: true }))
+			return false
+		return true
+	})
 }

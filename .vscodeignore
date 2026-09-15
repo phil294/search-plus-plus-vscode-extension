@@ -3,6 +3,7 @@ todo*
 vscodeignored
 node_modules
 !node_modules/node-sqlite3-wasm
+!node_modules/@vscode/ripgrep/**
 !node_modules/@vscode-elements/elements-lite/components/textfield/textfield.css
 !node_modules/@vscode-elements/elements-lite/components/collapsible/collapsible.css
 !node_modules/vue/dist/vue.esm-browser.prod.js
@@ -20,3 +21,4 @@ vsix-out
 eslint.config.js
 eslint.config.mjs
 src
+!src/webview.html

@@ -1,11 +1,16 @@
-let vscode = require('vscode')
 let { log_debug, log_error, log_warn } = require('./log')
 let { readFile } = require('fs/promises')
+let { sleep } = require('./util')
 let { isBinary } = require('./lib/istextorbinary')
 
 /** @typedef {import('./indexer').Indexer} Indexer */
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
+
+// TODO configure. A large value here isn't really dangerous (apart from increasing index size and initial
+// indexing time), but the product of this and read_group_size x4 will be the amount of RAM (in MB) that's
+// needed while indexing, so be careful setting both too high.
+const max_index_size = 20 * 1024 * 1024
 
 /** @augments {Map<string, FileMeta>} */
 class IndexQueue extends Map {
@@ -57,6 +62,7 @@ class IndexQueue extends Map {
 		// TODO: reeval
 		const read_group_size = 20 // 100 7sec, 20 8sec, 10 9sec, 1 12sec. 20 without logging 6sec. Mustn't be too big because reading and many files at the same time and keeping them in ram can be heavy on system resources
 		let entries = [...this.entries()]
+		let last_pause = Date.now()
 		for (let i = 0; i < entries.length; i += read_group_size) {
 			let read_group = entries.slice(i, i + read_group_size) // calling it "group" to distinguish from index-flush "batch"
 			await Promise.all(read_group.map(async ([path, file_meta]) => {
@@ -66,9 +72,17 @@ class IndexQueue extends Map {
 				log_debug(`indexing (${uri_i + 1}/${size}) ${path}`)
 				if (uri_i % 100 === 0)
 					on_progress(uri_i / size)
+				// Binary-by-extension, empty, and oversized files are still recorded (so the file picker
+				// can link to them and they aren't rescanned each time), but their contents are not
+				// indexed: text stays null and no read happens. Gitignored files (index_content === false)
+				// are treated the same way: listed in the picker, but never content-indexed.
+				if (file_meta.index_content === false || file_meta.size === 0 || file_meta.size > max_index_size || await isBinary(file_meta.path, undefined)) {
+					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null })
+					return
+				}
 				let file_buf
 				try {
-					file_buf = await readFile(vscode.Uri.file(file_meta.path).fsPath)
+					file_buf = await readFile(file_meta.path)
 				} catch (e) {
 					if (e.code === 'EISDIR') // TODO: why do some dirs appear here? via file changer it seems
 						log_warn(file_meta.path, e)
@@ -81,15 +95,21 @@ class IndexQueue extends Map {
 				}
 				if (await isBinary(null, file_buf)) { // check buffer contents
 					log_debug('skipping: is binary (buf)')
-					// We still write the file into the index as empty so to prevent unnecessary
-					// re-scanning at next invocation
-					file_buf = ''
+					// still recorded, but contents not indexed
+					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null })
+					return
 				}
 				docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString() })
 				docs_batch_bytes_read += file_buf.length
 			}))
 			if (docs_batch_bytes_read > docs_batch_bytes_threshold)
 				await flush_docs_batch()
+			// Yield the disk frequently but briefly so a long index doesn't starve other fs users
+			// (editor search, file saves). Time-based, so the overhead and total index time stay small.
+			if (Date.now() - last_pause > 90) {
+				await sleep(7)
+				last_pause = Date.now()
+			}
 		}
 		await flush_docs_batch()
 		if (skipped_path_EACCESS)
@@ -100,12 +120,6 @@ class IndexQueue extends Map {
 		console.debug(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
 		on_progress(null)
 		this.is_running = false
-	}
-
-	async is_indexable(/** @type FileMeta */ doc) {
-		return ! await isBinary(doc.path, undefined) // checks only file extension
-			&& doc.size > 0
-			&& doc.size < 20 * 1024 * 1024 // TODO configure. A large value here isn't really dangerous (apart from increasing index size and initial indexing time), but the product of this and read_group_size x4 will be the amount of RAM (in MB) that's needed while indexing, so be careful setting both too high.
 	}
 }
 

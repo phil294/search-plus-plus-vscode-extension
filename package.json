@@ -17,17 +17,53 @@
 		"Other"
 	],
 	"activationEvents": [
-		"onStartupFinished",
-		"TODO"
+		"onStartupFinished"
 	],
 	"main": "./main.js",
 	"contributes": {
 		"commands": [
 			{
 				"command": "search++.search",
-				"title": "Search",
+				"title": "Focus Search",
 				"category": "Search++",
 				"icon": "$(search-fuzzy)"
+			},
+			{
+				"command": "search++.filePicker",
+				"title": "Go to File",
+				"category": "Search++"
+			},
+			{
+				"command": "search++.goToTextInFile",
+				"title": "Go to Text in Current File",
+				"category": "Search++"
+			},
+			{
+				"command": "search++.goToTextInWorkspace",
+				"title": "Go to Text in Workspace",
+				"category": "Search++"
+			},
+			{
+				"command": "search++.focusNextResult",
+				"title": "Focus Next Search Result",
+				"category": "Search++"
+			},
+			{
+				"command": "search++.focusPreviousResult",
+				"title": "Focus Previous Search Result",
+				"category": "Search++"
+			}
+		],
+		"keybindings": [
+			{
+				"command": "search++.focusNextResult",
+				"key": "f4",
+				"when": "search++.hasResults"
+			},
+			{
+				"command": "search++.focusPreviousResult",
+				"key": "shift+f4",
+				"when": "search++.hasResults"
 			}
 		],
 		"viewsContainers": {
@@ -51,18 +87,10 @@
 		"configuration": {
 			"title": "Search++",
 			"properties": {
-				"search++.doNotUse": {
-					"description": "This setting has no effect.",
-					"type": "string",
-					"default": "editor",
-					"enum": [
-						"editor",
-						"view"
-					],
-					"enumDescriptions": [
-						"bing",
-						"bong"
-					]
+				"search++.verboseLogging": {
+					"description": "When enabled, writes verbose debug output to the 'Search++' output channel. Leave off unless you are diagnosing a problem.",
+					"type": "boolean",
+					"default": false
 				}
 			}
 		}
@@ -91,6 +119,7 @@
 		"@vscode-elements/elements-lite": "^0.4.0",
 		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
+		"@vscode/ripgrep": "1.15.9",
 		"micromatch": "^4.0.8",
 		"node-sqlite3-wasm": "^0.8.51",
 		"vue": "^3.5.24"

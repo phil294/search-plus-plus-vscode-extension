@@ -26,13 +26,67 @@
 			margin: 0;
 			color: var(--vscode-foreground);
 			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
+			/* TODO: font-size: var(--vscode-font-size); */
+			font-size: 10.5px;
+		}
+		input {
+			/* TODO: */
+			font-family: 'Liberation Mono' !important;
+    		font-size: 10px !important;
 		}
 		.search-container {
 			padding: 8px;
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+		.input-row {
+			display: flex;
+			align-items: center;
+			gap: 4px;
 		}
 		.search-input {
-			width: 100%;
+			flex: 1;
+			min-width: 0;
+			height: 22px;
+			line-height: 16px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+		.toggle-filters {
+			background: transparent;
+			border: none;
+			color: var(--vscode-icon-foreground);
+			cursor: pointer;
+			padding: 2px 4px;
+			border-radius: 4px;
+			display: flex;
+			align-items: center;
+		}
+		.toggle-filters:hover {
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+		.toggle-filters.active {
+			background: var(--vscode-inputOption-activeBackground);
+			color: var(--vscode-inputOption-activeForeground);
+			outline: 1px solid var(--vscode-inputOption-activeBorder);
+		}
+		.filters {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+		}
+		.filter-input {
+			width: 100% !important;
+			height: 19px;
+			line-height: 13px;
+			padding-top: 2px;
+			padding-bottom: 2px;
+		}
+		.filter-label {
+			color: var(--vscode-descriptionForeground);
+			/* font-size: 11px; */
+			margin-bottom: -2px;
 		}
 		.results-container {
 			padding: 0;
@@ -44,48 +98,63 @@
 		.result-count {
 			padding: 4px 8px;
 			color: var(--vscode-descriptionForeground);
-			font-size: 12px;
+			/* font-size: 12px; */
 		}
-		.vscode-collapsible {
-			margin: 0;
-			border: none;
-		}
-		.vscode-collapsible summary {
+		.file-header {
 			display: flex;
 			align-items: center;
-			padding: 0;
+			padding: 1px 8px 1px 4px;
+			min-height: 22px;
+			box-sizing: border-box;
 			cursor: pointer;
-			list-style: none;
+			user-select: none;
 		}
-		.vscode-collapsible summary:hover {
+		.file-header:hover {
 			background: var(--vscode-list-hoverBackground);
 		}
-		.vscode-collapsible summary::-webkit-details-marker {
-			display: none;
+		.file-header.selected,
+		.match-line.selected {
+			background: var(--vscode-list-activeSelectionBackground);
+			color: var(--vscode-list-activeSelectionForeground);
 		}
 		.icon-arrow {
-			margin-right: 4px;
+			margin-right: 2px;
 			font-size: 14px;
-			transition: transform 0.1s;
-		}
-		.vscode-collapsible[open] .icon-arrow {
-			transform: rotate(90deg);
+			flex: none;
 		}
 		.file-icon {
 			margin-right: 6px;
-			font-size: 16px;
+			width: 16px;
+			height: 16px;
+			flex: none;
 		}
 		.file-name {
 			font-weight: normal;
-			font-size: 13px;
+			/* font-size: 13px; */
+			flex: none;
 		}
 		.file-path {
 			margin-left: 6px;
 			color: var(--vscode-descriptionForeground);
-			font-size: 12px;
+			/* font-size: 12px; */
+			flex: 1;
+		}
+		.badge {
+			flex: none;
+			margin-left: 6px;
+			min-width: 16px;
+			padding: 0 5px;
+			border-radius: 9px;
+			text-align: center;
+			/* font-size: 11px; */
+			line-height: 16px;
+			background: var(--vscode-badge-background);
+			color: var(--vscode-badge-foreground);
 		}
 		.match-line {
-			padding: 2px 8px 2px 32px;
+			padding: 1px 8px 1px 32px;
+			min-height: 22px;
+			box-sizing: border-box;
 			cursor: pointer;
 			display: flex;
 			align-items: center;
@@ -113,40 +182,57 @@
 <body>
 	<div id="app">
 		<div class="search-container">
-			<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" placeholder="Search..." autocomplete="off" ref="search_input" />
+			<div class="input-row">
+				<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" placeholder="Search..." autocomplete="off" ref="search_input" />
+				<button class="toggle-filters" :class="{ active: show_filters }" @click="show_filters = ! show_filters" title="Toggle Search Details">
+					<i class="codicon codicon-ellipsis"></i>
+				</button>
+			</div>
+			<div v-if="show_filters" class="filters">
+				<div class="filter-label">files to include</div>
+				<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_search_input" placeholder="e.g. *.js, src/" autocomplete="off" />
+				<div class="filter-label">files to exclude</div>
+				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_search_input" placeholder="e.g. *.test.js, dist/" autocomplete="off" />
+			</div>
 		</div>
 		<div v-if="result_count_text" class="result-count">{{ result_count_text }}</div>
-		<div class="results-container">
+		<div class="results-container" ref="results_container">
 			<div v-if="! results.length && search_query.trim()" class="no-results">
 				No results found.
 			</div>
-			<details v-for="item in results" :key="item.path" class="vscode-collapsible" open>
-				<summary>
-					<i class="codicon codicon-chevron-right icon-arrow"></i>
-					<i :class="'codicon codicon-' + get_file_icon(item.path) + ' file-icon'"></i>
+			<div v-for="(item, fi) in results" :key="item.path" class="file-group">
+				<div class="file-header" :class="{ selected: is_file_selected(fi) }" @click="toggle_file(fi)">
+					<i class="codicon icon-arrow" :class="item.collapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
+					<img class="file-icon" :src="'img/file-icons/' + (item.icon || 'default_file.svg')">
 					<span class="file-name">{{ get_file_name(item.path) }}</span>
 					<span class="file-path">{{ get_dir_path(item.path) }}</span>
-				</summary>
-				<div>
-					<div v-for="match in item.matches" :key="match.line_number" class="match-line" @click="open_file(item.path, match.line_number)">
+					<span class="badge">{{ item.matches.length }}</span>
+				</div>
+				<div v-if="! item.collapsed" class="file-matches">
+					<div v-for="(match, mi) in item.matches" :key="match.line_number + '-' + mi" class="match-line" :class="{ selected: is_match_selected(fi, mi) }" @click="open_match(fi, mi)">
 						<span class="line-number">{{ match.line_number }}</span>
 						<span class="line-text" :title="match.line_text">{{ match.line_text.trim() }}</span>
 					</div>
 				</div>
-			</details>
+			</div>
 		</div>
 	</div>
 
 	<script type="module">
-		import { createApp, ref, computed, onMounted, nextTick } from 'vue'
+		import { createApp, ref, computed, onMounted, nextTick, watch } from 'vue'
 		const vscode = acquireVsCodeApi()
 		createApp({
 			setup() {
 				const search_query = ref(localStorage.getItem('search_query') || '')
+				const include_query = ref(localStorage.getItem('search_include') || '')
+				const exclude_query = ref(localStorage.getItem('search_exclude') || '')
+				const show_filters = ref(localStorage.getItem('search_show_filters') === '1' || !! (include_query.value || exclude_query.value))
 				const results = ref([])
 				const has_more = ref(false)
 				const workspace_folders = ref([])
 				const search_input = ref(null)
+				const results_container = ref(null)
+				const selected = ref(-1)
 				let search_debouncer = null
 
 				const result_count_text = computed(() => {
@@ -157,43 +243,151 @@
 						(has_more.value ? ' (truncated, please refine your search)' : '')
 				})
 
+				// A flat, ordered list of the currently-visible navigable rows (file headers and,
+				// for expanded files, their match lines). Used for keyboard navigation.
+				const flat_rows = computed(() => {
+					const rows = []
+					results.value.forEach((file, fi) => {
+						rows.push({ kind: 'file', fi })
+						if (! file.collapsed)
+							file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi, mi }))
+					})
+					return rows
+				})
+
+				const is_file_selected = (fi) => {
+					const row = flat_rows.value[selected.value]
+					return !! row && row.kind === 'file' && row.fi === fi
+				}
+				const is_match_selected = (fi, mi) => {
+					const row = flat_rows.value[selected.value]
+					return !! row && row.kind === 'match' && row.fi === fi && row.mi === mi
+				}
+
+				const scroll_selected_into_view = () => nextTick().then(() => {
+					const el = results_container.value?.querySelector('.selected')
+					el?.scrollIntoView({ block: 'nearest' })
+				})
+
+				const move = (delta) => {
+					const rows = flat_rows.value
+					if (! rows.length) return
+					let i = selected.value < 0 ? (delta > 0 ? 0 : rows.length - 1) : selected.value + delta
+					if (i < 0) i = 0
+					if (i >= rows.length) i = rows.length - 1
+					selected.value = i
+					scroll_selected_into_view()
+				}
+
+				const toggle_file = (fi) => {
+					results.value[fi].collapsed = ! results.value[fi].collapsed
+				}
+
+				const open_match = (fi, mi) => {
+					const file = results.value[fi]
+					const match = file.matches[mi]
+					// keep the clicked/activated row selected
+					const rows = flat_rows.value
+					const idx = rows.findIndex(r => r.kind === 'match' && r.fi === fi && r.mi === mi)
+					if (idx !== -1) selected.value = idx
+					vscode.postMessage({ type: 'open_file', path: file.path, line_number: match.line_number })
+				}
+
+				const activate = () => {
+					const row = flat_rows.value[selected.value]
+					if (! row) return
+					if (row.kind === 'file') toggle_file(row.fi)
+					else open_match(row.fi, row.mi)
+				}
+
+				const set_collapsed = (val) => {
+					const row = flat_rows.value[selected.value]
+					if (! row) return
+					if (row.kind === 'file')
+						results.value[row.fi].collapsed = val
+					else if (val) {
+						// left on a match: jump up to its file header
+						const rows = flat_rows.value
+						for (let i = selected.value; i >= 0; i--)
+							if (rows[i].kind === 'file') { selected.value = i; break }
+						scroll_selected_into_view()
+					}
+				}
+
+				// F4 / shift+F4 from the extension: go to next/previous match line and open it.
+				const nav = (direction) => {
+					const rows = flat_rows.value
+					if (! rows.length) return
+					const step = direction === 'next' ? 1 : -1
+					let i = selected.value
+					for (;;) {
+						i += step
+						if (i < 0 || i >= rows.length) return
+						if (rows[i].kind === 'match') {
+							selected.value = i
+							open_match(rows[i].fi, rows[i].mi)
+							return
+						}
+					}
+				}
+
+				const focus_search = () => search_input.value?.focus()
+
+				const on_keydown = (e) => {
+					const target = e.target
+					// let the include/exclude text inputs handle their own keys normally
+					if (target && target.classList && target.classList.contains('filter-input')) return
+					const in_search = target === search_input.value
+					switch (e.key) {
+						case 'ArrowDown':
+							e.preventDefault()
+							move(1)
+							break
+						case 'ArrowUp':
+							if (in_search) break
+							e.preventDefault()
+							move(-1)
+							break
+						case 'Enter':
+							e.preventDefault()
+							activate()
+							break
+						case 'ArrowRight':
+							if (in_search) break
+							e.preventDefault()
+							set_collapsed(false)
+							break
+						case 'ArrowLeft':
+							if (in_search) break
+							e.preventDefault()
+							set_collapsed(true)
+							break
+						case 'Escape':
+							if (in_search) break
+							e.preventDefault()
+							focus_search()
+							break
+					}
+				}
+
 				const on_search_input = () => {
 					clearTimeout(search_debouncer)
 					search_debouncer = setTimeout(() => {
 						localStorage.setItem('search_query', search_query.value)
+						localStorage.setItem('search_include', include_query.value)
+						localStorage.setItem('search_exclude', exclude_query.value)
 						vscode.postMessage({
 							type: 'search',
-							query: search_query.value
+							query: search_query.value,
+							include: include_query.value,
+							exclude: exclude_query.value,
 						})
 					}, 30)
 				}
 
-				const get_file_icon = (file_path) => ({
-					'js': 'symbol-method',
-					'ts': 'symbol-method',
-					'json': 'symbol-namespace',
-					'md': 'markdown',
-					'html': 'symbol-keyword',
-					'css': 'symbol-color',
-					'py': 'symbol-method',
-					'java': 'symbol-method',
-					'cpp': 'symbol-method',
-					'c': 'symbol-method',
-					'h': 'symbol-method',
-					'rs': 'symbol-method',
-					'go': 'symbol-method',
-					'rb': 'symbol-method',
-					'php': 'symbol-method',
-					'sh': 'terminal',
-					'yml': 'symbol-namespace',
-					'yaml': 'symbol-namespace',
-					'xml': 'symbol-keyword',
-					'svg': 'file-media',
-					'png': 'file-media',
-					'jpg': 'file-media',
-					'jpeg': 'file-media',
-					'gif': 'file-media',
-				})[file_path.split('.').pop().toLowerCase()] || 'file'
+				watch(show_filters, (v) => localStorage.setItem('search_show_filters', v ? '1' : '0'))
+				watch(() => results.value.length, (len) =>
+					vscode.postMessage({ type: 'has_results', value: len > 0 }))
 
 				const get_file_name = (path) =>
 					path.split('/').pop()
@@ -219,12 +413,6 @@
 					const relative_dir = parts.join('/')
 					return relative_dir ? `${workspace_folder.name} • ${relative_dir}` : workspace_folder.name
 				}
-				const open_file = (path, line_number) =>
-					vscode.postMessage({
-						type: 'open_file',
-						path: path,
-						line_number: line_number
-					})
 				const highlight_search_terms = () => {
 					if (! search_query.value.trim() || ! CSS.highlights) {
 						CSS.highlights?.clear()
@@ -260,18 +448,24 @@
 				window.addEventListener('message', (event) => {
 					const message = event.data
 					if (message.type === 'results') {
-						results.value = message.results
+						results.value = (message.results || []).map(r => ({ ...r, collapsed: false }))
 						has_more.value = message.has_more
 						workspace_folders.value = message.workspace_folders || []
+						selected.value = -1
 						nextTick().then(highlight_search_terms)
+					} else if (message.type === 'nav') {
+						nav(message.direction)
+					} else if (message.type === 'focus_search') {
+						focus_search()
 					}
 				})
+				window.addEventListener('keydown', on_keydown)
 				onMounted(() => {
 					search_input.value?.focus()
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, results, has_more, result_count_text, search_input, on_search_input, get_file_icon, get_file_name, get_dir_path, open_file }
+				return { search_query, include_query, exclude_query, show_filters, results, has_more, result_count_text, search_input, results_container, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

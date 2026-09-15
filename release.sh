@@ -9,6 +9,7 @@ pause() {
 
 on_close() {
     echo "module.exports = require('./src/extension')" > main.js # revert
+    rm -f worker.js # bundled only for packaging; dev loads src/worker.js
 }
 trap on_close EXIT
 
@@ -53,7 +54,10 @@ run npm run lint
 
 # main.js is different for bundle than for local testing, so we can skip the esbuild step in dev
 # but still keep the same entrypoint in package.json for both scenarios
-npx esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode
+# @vscode/ripgrep is kept external so its rgPath (__dirname/../bin/rg) still resolves to the shipped binary.
+npx esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode --external:@vscode/ripgrep
+# the indexer runs in a separate worker thread; it is bundled to the root as worker.js (src/ is not shipped)
+npx esbuild src/worker.js --bundle --platform=node --outfile=worker.js --external:vscode --external:@vscode/ripgrep
 mv node_modules/node-sqlite3-wasm/dist/node-sqlite3-wasm.wasm .
 
 echo built

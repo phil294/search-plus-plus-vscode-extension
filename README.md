@@ -18,7 +18,7 @@ images coming soon
 1. Instant text-based Go to definition fallback<br>
    <img width="745" height="235" alt="image" src="https://github.com/user-attachments/assets/59d82ee5-7c87-4a84-aa95-f24d0c9bcfc7" />
 
-1. (Not yet implemented: Instant File picker)
+1. Instant File picker (Go to File / Go to Text), a fast drop-in for the built-in ones
 
 For all text files, regardless of language.
 
@@ -40,11 +40,39 @@ A file is considered indexable if it isn't explicitly excluded with any of `"sea
 
 All searches are performed case insensitive, results are case preserving.
 
+## Full takeover from the built-in search
+
+Search++ ships commands but deliberately does *not* rebind VSCode's built-in shortcuts, so it stays unobtrusive by default. If you want Search++ to fully replace the (slow, on very large repos) built-in Search, Go to File and Go to Symbol, add the snippet below to your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*).
+
+The `-` prefixed entries unbind the built-in commands; the others map the same keys to Search++.
+
+```json
+[
+    { "key": "ctrl+shift+f", "command": "-workbench.action.findInFiles" },
+    { "key": "ctrl+shift+f", "command": "search++.search" },
+
+    { "key": "ctrl+p", "command": "-workbench.action.quickOpen" },
+    { "key": "ctrl+p", "command": "search++.filePicker" },
+
+    { "key": "ctrl+shift+o", "command": "-workbench.action.gotoSymbol" },
+    { "key": "ctrl+shift+o", "command": "search++.goToTextInFile" },
+
+    { "key": "ctrl+t", "command": "-workbench.action.showAllSymbols" },
+    { "key": "ctrl+t", "command": "search++.goToTextInWorkspace" }
+]
+```
+
+On macOS, replace `ctrl` with `cmd`.
+
+The file picker understands the same prefixes as the built-in one, so a single binding is enough if you prefer: type nothing to search files by name (append `:123` to jump to a line), prefix `@` to search text in the current file, or `#` to search text across the whole workspace.
+
+Within the Search++ view, results are navigable entirely from the keyboard, just like the built-in Search view: `ArrowUp`/`ArrowDown` move through files and matches, `ArrowLeft`/`ArrowRight` collapse/expand a file, `Enter` opens the selected match, and `Escape` returns to the search box. `F4` / `Shift+F4` jump to the next / previous match (these two are bound automatically).
+
 ## Large workspaces
 
 Everything has been optimized for very large repositories. Behemoths like Chromium source (more than 350,000 indexable files) take about one hour for the initial indexing. There's still definitely room for indexing speed improvements, but once the onetime indexing is done, everything behaves instantaneously forever.
 
-In some very large projects like these with many `.gitignore` files, there might be too much delay at startup and possibly unnecessary indexing. This is because we're still waiting for VSCode's new `findFiles2` proposal to be stabilized: https://github.com/microsoft/vscode/issues/48674. The indexing won't change, but with `findFiles2`, git-excluded files can be omitted much faster in the preceding *scanning* process, resulting in less delay at every startup and possibly fixing unnecessary indexing.
+Scanning (finding the non-ignored files to index) is done with [ripgrep](https://github.com/BurntSushi/ripgrep), bundled via `@vscode/ripgrep`. It honours your `.gitignore`/`.ignore`/`.rgignore` files natively and very quickly, so even workspaces with many `.gitignore` files start up fast. The actual indexing runs in a separate worker thread, so it never blocks the editor UI.
 
 <!-- ## asdf
 
@@ -56,11 +84,10 @@ Special characters other than "normal" letters are skipped, you can only search 
 
 ## Roadmap
 
-- Explore adding a file picker too to replace the default one which is also immensely slow
 - Several configuration options
 - Possible speed improvements, various TODOs in the code
 - Performance comparison (below)
-- Search view improvements such as shortcuts or maybe even regex
+- Search view improvements such as maybe even regex
 
 ## Configuration
 
@@ -110,7 +137,7 @@ Please open issues in the [GitHub Repository](https://github.com/phil294/search-
 
 ## Debugging
 
-There's a verbose log in `Output` > `Search++`. TODO: make optional
+There's an optional verbose log in `Output` > `Search++`. It is disabled by default; enable the `search++.verboseLogging` setting to turn it on (no reload required).
 
 ## Building
 

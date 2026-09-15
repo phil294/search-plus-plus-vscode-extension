@@ -2,28 +2,31 @@ let vscode = require('vscode')
 let { debounce } = require('./util')
 const { isMatch } = require('micromatch')
 const { stat } = require('fs/promises')
-const { log_debug, log_error, log_warn } = require('./log')
-const { Indexer } = require('./indexer')
-const { IndexQueue } = require('./index-queue')
-const { EXT_ID } = require('./global')
-const { find_files } = require('./find-files')
+const { log_debug, log_error, log_warn, set_verbose } = require('./log')
+const { IndexerClient } = require('./indexer-client')
+const { EXT_ID, word_split_regex } = require('./global')
+const { find_files, find_indexed_paths } = require('./find-files')
+const { show_file_picker } = require('./file-picker')
+const { load_icon_mapping, icon_file_name } = require('./file-icons')
+const { RecencyStore } = require('./recency')
 const { readFileSync } = require('fs')
 
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
 
-/** This is the default value of fergiemcdowall/search-index plus underscore. SQLite FTS splits automatically, TODO
-but we need it for search also. TODO: or do we? */
-const word_split_regex = /[\p{L}\d_]+/gu
-
 process.on('unhandledRejection', (/** @type any */ err) => {
+	// Process-global: VS Code runs all extensions in one host, so this also catches rejections from
+	// other extensions (e.g. the built-in Git extension's IsInSubmodule errors). Those never touch our
+	// worker-thread indexing, so only surface rejections whose stack points at our own code.
+	if (typeof err?.stack !== 'string' || ! err.stack.includes(__dirname))
+		return log_debug('ignoring unrelated unhandledRejection', err?.gitErrorCode || err?.message || err)
 	log_error('unhandledRejection-handler', err)
 	log_error(err.message || JSON.stringify(err))
-	// The error still appears as "rejected promise not handled within 1 second: ..." but what can you do \_( ._.)_/
 })
 
 module.exports.activate = async (/** @type vscode.ExtensionContext */context) => {
 	log_debug('extension activate')
+	load_icon_mapping(context.extensionUri)
 	if (! vscode.workspace.workspaceFolders || ! context.storageUri) {
 		log_debug('no folder opened, aborting')
 		// No workspace present. Once the user switches, all extension
@@ -31,8 +34,29 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		return
 	}
 
-	let indexer = new Indexer({ storage_uri: context.storageUri, word_split_regex })
-	let index_queue = new IndexQueue(indexer)
+	let initial_verbose = !! vscode.workspace.getConfiguration().get('search++.verboseLogging')
+	set_verbose(initial_verbose)
+
+	let indexer_client = new IndexerClient(context, {
+		storage_path: context.storageUri.fsPath,
+		verbose: initial_verbose,
+		on_progress: (/** @type number? */ p) => on_index_queue_progress(p),
+	})
+	context.subscriptions.push({ dispose: () => indexer_client.dispose() })
+
+	let recency = new RecencyStore(context.globalState)
+	let remember_open = (/** @type vscode.TextEditor | undefined */ editor) => {
+		if (editor?.document.uri.scheme === 'file')
+			recency.touch(editor.document.uri.path)
+	}
+	remember_open(vscode.window.activeTextEditor)
+	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(remember_open))
+
+	let update_verbose = () => {
+		let verbose = !! vscode.workspace.getConfiguration().get('search++.verboseLogging')
+		set_verbose(verbose)
+		indexer_client.set_verbose(verbose).catch((/** @type any */ e) => log_error('set_verbose failed', e))
+	}
 
 	// order matters: right overwrites left
 	const exclude_config_keys = ['files.exclude', 'search.exclude', 'files.watcherExclude', 'search++.watcherExclude']
@@ -56,17 +80,26 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			.map(c => c[0]))]
 	}
 
-	let uri_to_file_meta = async (/** @type vscode.Uri */ uri) => {
+	let uri_to_file_meta = async (/** @type vscode.Uri */ uri, /** @type boolean */ index_content = true) => {
 		let file_stat = await stat(uri.fsPath)
 		// TODO: eslint comment not required?
 		return /** @type FileMeta */ ({ // eslint-disable-line no-extra-parens
 			path: uri.path,
 			size: file_stat.size,
 			mtime: Math.round(file_stat.mtimeMs / 1000),
+			index_content,
 		})
 	}
 
 	const gitignore_filenames = ['.gitignore', '.rignore', '.ignore']
+
+	// Paths that are gitignored: shown in the file picker but recorded name-only, so the incremental
+	// watcher never content-indexes them. Both refreshed on every full scan, and extended lazily on the
+	// watcher path when previously-unseen files show up.
+	/** @type {Set<string>} */
+	let indexed_paths = new Set()
+	/** @type {Set<string>} */
+	let name_only_paths = new Set()
 
 	let on_index_queue_progress = (/** @type number? */ p) =>
 		status_bar_item_command.text = p == null ? '' : `$(search-fuzzy) 2/2 Indexing ${Math.round(p * 100)}%`
@@ -83,49 +116,28 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		log_debug('exclude_patterns', exclude_patterns)
 		let new_files
 		try {
-			new_files = await find_files('**', { excludes: exclude_patterns, gitignore_filenames })
+			new_files = await find_files({ excludes: exclude_patterns })
 		} catch (e) {
-			if (e.message.includes('error parsing glob'))
-				return log_error('Scanning failed because one of your gitignore files contains unparsable contents. Please correct them, then restart VSCode.')
-			throw e
+			is_scanning = false
+			status_bar_item_command.text = ''
+			return log_error('Scanning (ripgrep) failed: ' + (e.message || e))
 		}
 		log_debug('stat files...')
-		let new_file_metas = await Promise.all(new_files
+		name_only_paths = new Set(new_files.filter(f => ! f.index_content).map(f => f.uri.path))
+		indexed_paths = new Set(new_files.filter(f => f.index_content).map(f => f.uri.path))
+		let new_file_metas = (await Promise.all(new_files
 			// TODO: this is the bottleneck for very large repos. how to speed up?
 			// TODO in chunks, not all at the same time (?)
-			.map(uri_to_file_meta))
-
-		log_debug('comparing with stored...')
-		// TODO: how bad cpu-wise for huge repos?
-		let old_meta_docs = await indexer.all_meta_docs()
-		// TODO: how bad cpu-wise for huge repos? Map<> faster?
-		let old_mtime_by_path = old_meta_docs.reduce((/** @type {Record<string,number>} */ all, doc) => {
-			all[doc.path] = doc.mtime
-			return all
-		}, {})
-
-		// TODO: this always includes binary file ext files because they just get filtered out in the
-		// next step. could reduce unnecessary stat()s and handling here by moving the isBinary ext
-		// logic from is_indexable into the findFiles exclude patterns above (watchFiles?)
-		let new_docs_need_indexing = new_file_metas.filter(new_file_meta =>
-			old_mtime_by_path[new_file_meta.path] !== new_file_meta.mtime)
-		for (let doc of new_docs_need_indexing)
-			if (await index_queue.is_indexable(doc))
-				index_queue.add(doc)
-
-		// TODO: perf
-		let new_docs_paths = new Set(new_file_metas.map(d => d.path))
-		let old_paths_need_deletion = old_meta_docs.filter(doc_meta =>
-			! new_docs_paths.has(doc_meta.path.toString()), // TODO: why tostring?
-		).map(d => d.path.toString())
-		log_debug('deleting docs no longer present', old_paths_need_deletion.slice(0, 100), old_paths_need_deletion.length > 100 ? `... and ${old_paths_need_deletion.length - 100} more` : '')
-		await indexer.delete_doc_by_path(...old_paths_need_deletion)
+			.map(f => uri_to_file_meta(f.uri, f.index_content).catch(() => null)))) // file may vanish between listing and stat
+			.filter((/** @type {FileMeta?} */ m) => !! m)
 
 		status_bar_item_command.text = ''
-		log_debug('scanning complete')
 		log_debug(`scanning took ${(Date.now() - start) / 1000} seconds`)
-		index_queue.run({ on_progress: on_index_queue_progress })
 		is_scanning = false
+		// The worker owns the index: it diffs the new file set against what's stored, (re)indexes
+		// changed files and removes files that no longer exist.
+		indexer_client.sync_files(/** @type {FileMeta[]} */ (new_file_metas)) // eslint-disable-line no-extra-parens
+			.catch((/** @type any */ e) => log_error('sync_files failed', e))
 	}
 	let scan_debounced = () => debounce(scan, 2500)
 
@@ -134,38 +146,57 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	vscode.workspace.onDidChangeWorkspaceFolders(scan_debounced)
 
 	let watcher = vscode.workspace.createFileSystemWatcher('**')
+	/** @type {Map<string, vscode.Uri>} */
+	let pending_changed = new Map()
+	let flush_changed = async () => {
+		let uris = [...pending_changed.values()]
+		pending_changed.clear()
+		if (! uris.length)
+			return
+		// Classify any paths not seen by the last scan (e.g. freshly created files) with a single
+		// gitignore-honoured ripgrep listing, so gitignored files are never content-indexed.
+		let unknown = uris.filter(u => ! indexed_paths.has(u.path) && ! name_only_paths.has(u.path))
+		if (unknown.length)
+			try {
+				let indexed_now = await find_indexed_paths({ excludes: get_exclude_patterns() })
+				for (let u of unknown)
+					(indexed_now.has(u.path) ? indexed_paths : name_only_paths).add(u.path)
+			} catch (e) {
+				log_error('classifying changed files failed', e)
+			}
+		let metas = (await Promise.all(uris.map(u =>
+			uri_to_file_meta(u, ! name_only_paths.has(u.path)).catch(() => null)))) // file may vanish between event and stat
+			.filter((/** @type {FileMeta?} */ m) => !! m)
+		if (metas.length)
+			indexer_client.index_files(/** @type {FileMeta[]} */ (metas)).catch((/** @type any */ e) => log_error('index_files failed', e)) // eslint-disable-line no-extra-parens
+	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		log_debug('file changed', uri.fsPath)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			return scan_debounced()
 		// files.watcherExclude files should actually never arrive here, but for the other three settings,
 		// an additional filtering here is required:
-		// TODO: this doesn't check the gitignores. saving/caching those is difficult because folder-based which can themselves change etc
-		// so does this unnecessarily index stuff?
 		if (isMatch(uri.path, get_exclude_patterns())) { // TODO test
 			log_debug('but is excluded')
 			return false
 		}
-		let file_meta = await uri_to_file_meta(uri)
-		if (! await index_queue.is_indexable(file_meta))
-			return
-		index_queue.add(file_meta)
-		debounce(() => {
-			if (! is_scanning && ! index_queue.is_running)
-				// TODO: eslint spacing
-				index_queue.run({ on_progress: on_index_queue_progress })
-		}, 1000)
+		pending_changed.set(uri.path, uri)
+		debounce(flush_changed, 1000)
 	}
 	watcher.onDidChange(file_changed)
 	watcher.onDidCreate(file_changed)
 	watcher.onDidDelete(async (uri) => {
 		log_debug('delete doc onDidDelete', uri.path)
-		await indexer.delete_doc_by_path(uri.path)
+		indexed_paths.delete(uri.path)
+		name_only_paths.delete(uri.path)
+		await indexer_client.delete_paths([uri.path])
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			scan_debounced()
 	})
 
 	vscode.workspace.onDidChangeConfiguration((event) => {
+		if (event.affectsConfiguration('search++.verboseLogging'))
+			update_verbose()
 		if (exclude_config_keys.some(f => event.affectsConfiguration(f)))
 			return scan_debounced()
 	})
@@ -189,16 +220,26 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				if (message.type === 'search') {
 					if (! message.query?.trim())
 						return webview?.webview.postMessage({ type: 'results', results: [], workspace_folders: [] })
-					let workspace_folders = (vscode.workspace.workspaceFolders || []).map(folder => ({
+					let folders = vscode.workspace.workspaceFolders || []
+					let workspace_folders = folders.map(folder => ({
 						name: folder.name,
 						path: folder.uri.path,
 					}))
+					let filter = {
+						include: parse_patterns(message.include),
+						exclude: parse_patterns(message.exclude),
+						roots: folders.map(f => f.uri.path),
+					}
+					let found = await indexer_client.find_paths_with_lines_by_word(message.query, true, 1000, filter) // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
 					webview?.webview.postMessage({
 						type: 'results',
-						...await indexer.find_paths_with_lines_by_word(message.query, true, 1000), // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
+						...found,
+						results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
 						workspace_folders,
 					})
-				} else if (message.type === 'open_file') {
+				} else if (message.type === 'has_results')
+					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)
+				else if (message.type === 'open_file') {
 					let uri = vscode.Uri.file(message.path)
 					let doc = await vscode.window.showTextDocument(uri)
 					if (! message.line_number)
@@ -231,7 +272,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			log_debug('provideCompletionItems', word)
 			if (! word) // || word.length < min_word_length)
 				return
-			let dict = await indexer.autocomplete_word(word, 2000) // TODO configurable
+			let dict = await indexer_client.autocomplete_word(word, 2000) // TODO configurable
 			log_debug(`${dict.length} results`)
 			return dict.map((d) => {
 				let item = new vscode.CompletionItem(String(d), vscode.CompletionItemKind.Text)
@@ -244,7 +285,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		async resolveCompletionItem(item) {
 			let word = typeof item.label === 'string' ? item.label : item.label.label
 			let limit = 250
-			let paths = await indexer.find_paths_by_word(word, limit) // TODO configurable
+			let paths = await indexer_client.find_paths_by_word(word, limit) // TODO configurable
 			if (paths.length > 0) {
 				item.detail = `Search++ (found in ${paths.length} file${paths.length === 1 ? '' : 's'}${paths.length === limit ? ' (or more)' : ''})`
 
@@ -297,7 +338,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			if (/** @type {any} */ (has_other_providers)?.length) // eslint-disable-line no-extra-parens
 				return
 			log_debug('provideDefinition', word)
-			let results = await indexer.find_paths_with_lines_by_word(word, false, 250)
+			let results = await indexer_client.find_paths_with_lines_by_word(word, false, 250)
 			return results.results.map(result => {
 				let uri = vscode.Uri.file(result.path)
 				return result.matches.map(({ line_number }) =>
@@ -307,8 +348,33 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		},
 	}))
 
+	context.subscriptions.push(
+		vscode.commands.registerCommand('search++.search', async () => {
+			// reveal & focus the Search++ view, then focus its input box
+			await vscode.commands.executeCommand('search++.focus').then(undefined, () => {})
+			webview?.webview.postMessage({ type: 'focus_search' })
+		}),
+		vscode.commands.registerCommand('search++.filePicker', () =>
+			show_file_picker(indexer_client, { mode: 'file', recency, extension_uri: context.extensionUri })),
+		vscode.commands.registerCommand('search++.goToTextInFile', () =>
+			show_file_picker(indexer_client, { mode: 'text_in_file', recency, extension_uri: context.extensionUri })),
+		vscode.commands.registerCommand('search++.goToTextInWorkspace', () =>
+			show_file_picker(indexer_client, { mode: 'text_in_workspace', recency, extension_uri: context.extensionUri })),
+		vscode.commands.registerCommand('search++.focusNextResult', () =>
+			webview?.webview.postMessage({ type: 'nav', direction: 'next' })),
+		vscode.commands.registerCommand('search++.focusPreviousResult', () =>
+			webview?.webview.postMessage({ type: 'nav', direction: 'prev' })),
+	)
+
+	update_verbose()
+
 	// public api of this extension:
 	return { scan, file_changed, context }
+}
+
+/** Splits a comma-separated "files to include/exclude" input into individual glob tokens. */
+function parse_patterns(/** @type {string|undefined} */ input) {
+	return (input || '').split(',').map(s => s.trim()).filter(Boolean)
 }
 
 module.exports.deactivate = () => log_debug('extension deactivate')

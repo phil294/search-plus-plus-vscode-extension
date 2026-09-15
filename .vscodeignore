@@ -1,6 +1,7 @@
 .vscode
 todo*
 vscodeignored
+bench
 node_modules
 !node_modules/node-sqlite3-wasm
 !node_modules/@vscode/ripgrep/**

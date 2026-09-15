@@ -49,7 +49,18 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 		log_debug('deleting docs no longer present', gone.length)
 		await indexer.delete_doc_by_path(...gone)
 	}
-	await drain()
+	// For a large (re)index, building the file_content word indexes once at the end is much faster
+	// than maintaining them across millions of per-row inserts. Recreate is crash-safe (init_db uses
+	// `if not exists`). Skipped for small syncs where the rebuild cost would outweigh the saving.
+	let bulk = queue.size > 5000
+	if (bulk)
+		indexer.drop_word_indexes()
+	try {
+		await drain()
+	} finally {
+		if (bulk)
+			indexer.create_word_indexes()
+	}
 }
 
 /** Index a specific set of files (e.g. from file-watcher change events). */

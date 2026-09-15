@@ -28,8 +28,11 @@ const { Database } = require('node-sqlite3-wasm')
 
 /** wrapper around sqlite3 fts wasm. Owned by the indexing worker thread (single db connection). */
 module.exports.Indexer = class {
-	constructor(/** @type {{storage_path:string}} */ { storage_path }) {
+	constructor(/** @type {{storage_path:string, rows_per_chunk?:number, min_word_length?:number, extra_pragmas?:string}} */ { storage_path, rows_per_chunk = 500, min_word_length = 3, extra_pragmas = '' }) {
 		this.word_split_regex = word_split_regex
+		this.rows_per_chunk = rows_per_chunk
+		this.min_word_length = min_word_length
+		this.extra_pragmas = extra_pragmas
 		let index_path = path.join(storage_path, 'index')
 		if (! existsSync(index_path))
 			mkdirSync(index_path, { recursive: true })
@@ -79,16 +82,31 @@ module.exports.Indexer = class {
 		fts trigram necessary for partial matches (search).
 		*/
 		this.db.exec(`
+			pragma page_size = 8192;
 			pragma journal_mode = wal;
 			pragma foreign_keys = on;
 			pragma synchronous = normal;
 			pragma temp_store = memory;
+			pragma cache_size = -131072;
+			pragma mmap_size = 536870912;
+			${this.extra_pragmas}
 			create table if not exists file(id integer primary key autoincrement, path text unique, mtime number);
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
 			create index if not exists idx_file_content_word on file_content(word);
 			create index if not exists idx_file_content_word_lower on file_content(word_lower);
 			create virtual table if not exists file_content_search_index_fts_trigram using FTS5(text, content='', tokenize='trigram', contentless_delete=1);
 		`)
+	}
+
+	/** Drop the file_content word lookup indexes so a large bulk (re)index only maintains the primary
+	 * key. Recreate with create_word_indexes() once done; building an index in one sorted pass is far
+	 * cheaper than maintaining it across millions of random per-row inserts. Full-scan use only. */
+	drop_word_indexes() {
+		this.db.exec('drop index if exists idx_file_content_word; drop index if exists idx_file_content_word_lower;')
+	}
+
+	create_word_indexes() {
+		this.db.exec('create index if not exists idx_file_content_word on file_content(word); create index if not exists idx_file_content_word_lower on file_content(word_lower);')
 	}
 
 	index_docs(/** @type {IndexDoc[]} */ docs) {
@@ -114,7 +132,7 @@ module.exports.Indexer = class {
 			let docs_with_words = content_docs.map(doc => ({
 				path: doc.path,
 				words: [...new Set((String(doc.text).match(this.word_split_regex) || [])
-					.filter(w => w.length >= 3))], // TODO: config
+					.filter(w => w.length >= this.min_word_length))],
 			}))
 			// let total_words = docs_with_words.reduce((sum, doc) => sum + doc.words.length, 0)
 			// let double_qmarks_words = new Array(total_words).fill('(?,?)').join(',')
@@ -126,7 +144,7 @@ module.exports.Indexer = class {
 			// statement per chunk: statement preparation (not the actual b-tree insert) dominated indexing
 			// time on word-heavy files (e.g. a single .po batch stalled minutes). 500 rows stays well below
 			// SQLite's bound-parameter limit while minimising WASM round-trips.
-			const rows_per_chunk = 500
+			const rows_per_chunk = this.rows_per_chunk
 			log_debug(`Inserting total ${rows.length} words = ${Math.ceil(rows.length / rows_per_chunk)} chunks into file_content`)
 			let full_chunks = Math.floor(rows.length / rows_per_chunk)
 			if (full_chunks) {
@@ -145,11 +163,17 @@ module.exports.Indexer = class {
 	}
 
 	async delete_doc_by_path(/** @type {string[]} */ ...paths) {
-		let single_qmarks = new Array(paths.length).fill('?').join(',')
-		let old_ids = this.db.all(`select id from file where path in (${single_qmarks})`, paths).map(r => String(r.id))
-		this.db.run(`delete from file where path in (${single_qmarks})`, paths)
-		this.db.run('delete from file_content_search_index_fts_trigram where rowid in (' +
-			new Array(old_ids.length).fill('?').join(',') + ')', old_ids)
+		// Chunked to stay under SQLite's bound-parameter limit: a full scan can pass tens of thousands
+		// of removed paths at once, which would otherwise throw "too many SQL variables".
+		const chunk = 500
+		for (let i = 0; i < paths.length; i += chunk) {
+			let group = paths.slice(i, i + chunk)
+			let qmarks = new Array(group.length).fill('?').join(',')
+			let old_ids = this.db.all(`select id from file where path in (${qmarks})`, group).map(r => String(r.id))
+			this.db.run(`delete from file where path in (${qmarks})`, group)
+			if (old_ids.length)
+				this.db.run(`delete from file_content_search_index_fts_trigram where rowid in (${new Array(old_ids.length).fill('?').join(',')})`, old_ids)
+		}
 	}
 
 	/** not returning text contents here */

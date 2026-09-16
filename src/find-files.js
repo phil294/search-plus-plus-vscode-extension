@@ -1,7 +1,64 @@
 const { spawn } = require('child_process')
+const { existsSync, readdirSync } = require('fs')
+const path = require('path')
 let vscode = require('vscode')
-const { rgPath } = require('@vscode/ripgrep')
 const { log_debug, log_error } = require('./log')
+
+// ripgrep binary path, resolved lazily + memoised. We deliberately do NOT bundle our own rg: VS Code
+// already ships one built for the user's exact platform, so reusing it is universal and keeps the VSIX
+// small. Its location is an internal detail that has changed across versions (vscode-ripgrep ->
+// @vscode/ripgrep -> @vscode/ripgrep-universal), so we probe the known layouts under env.appRoot.
+/** @type {string|undefined} */
+let rg_path_cache
+function rg_path() {
+	if (rg_path_cache)
+		return rg_path_cache
+	let exe = process.platform === 'win32' ? 'rg.exe' : 'rg'
+	let target = `${process.platform}-${process.arch}` // e.g. linux-arm64, win32-x64
+	let node_dirs = app_roots().flatMap(root => [
+		path.join(root, 'node_modules.asar.unpacked'),
+		path.join(root, 'node_modules'),
+	])
+	let candidates = node_dirs.flatMap(dir => [
+		path.join(dir, '@vscode', 'ripgrep-universal', 'bin', target, exe),
+		path.join(dir, '@vscode', 'ripgrep', 'bin', target, exe),
+		path.join(dir, '@vscode', 'ripgrep', 'bin', exe),
+		path.join(dir, 'vscode-ripgrep', 'bin', exe),
+	])
+	rg_path_cache = candidates.find(existsSync)
+	// not doing this to catch errors in dev too:
+	// if (! rg_path_cache)
+	// 	// Dev-only last resort: the @vscode/ripgrep devDependency (host-platform binary, not in the VSIX).
+	// 	try {
+	// 		let dev = require('@vscode/ripgrep').rgPath
+	// 		if (existsSync(dev))
+	// 			rg_path_cache = dev
+	// 	} catch { /* not installed in the packaged extension */ }
+	if (! rg_path_cache) {
+		log_error(`could not locate ripgrep under ${vscode.env.appRoot} (tried @vscode/ripgrep-universal, @vscode/ripgrep); file search unavailable`)
+		throw new Error('ripgrep binary not found')
+	}
+	log_debug(`using ripgrep at ${rg_path_cache}`)
+	return rg_path_cache
+}
+
+// Candidate app dirs to search for the bundled rg. env.appRoot is the anchor, but VS Code 1.122.0
+// nests a second copy at <appRoot>/<commitHash>/resources/app, so also include any nested app dir
+// found via a single readdir (no recursive glob).
+function app_roots() {
+	let root = vscode.env.appRoot
+	let roots = [root]
+	try {
+		for (let entry of readdirSync(root, { withFileTypes: true })) {
+			if (! entry.isDirectory())
+				continue
+			let nested = path.join(root, entry.name, 'resources', 'app')
+			if (existsSync(nested))
+				roots.push(nested)
+		}
+	} catch { /* appRoot unreadable; the base root still gets probed */ }
+	return roots
+}
 
 /** Lists workspace files using ripgrep, which natively honours .gitignore/.ignore/.rgignore as
  * well as the extra `excludes` globs (files.exclude, search.exclude, etc.). Much faster and simpler
@@ -57,7 +114,7 @@ function rg_list(/** @type import('vscode').WorkspaceFolder */ folder, /** @type
 		for (let ex of excludes)
 			args.push('--glob', '!' + ex)
 		let cwd = folder.uri.fsPath
-		let child = spawn(rgPath, args, { cwd })
+		let child = spawn(rg_path(), args, { cwd })
 		/** @type {Buffer[]} */
 		let out = []
 		let err = ''

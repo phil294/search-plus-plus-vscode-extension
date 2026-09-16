@@ -1,7 +1,7 @@
 {
 	"name": "search-plusplus",
 	"description": "A fast, indexed full text search VSCode extension, with optional intellisense",
-	"version": "0.0.5",
+	"version": "0.0.8",
 	"icon": "img/logo.png",
 	"publisher": "phil294",
 	"private": false,
@@ -106,6 +106,7 @@
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^24.10.0",
 		"@types/vscode": "1.104.0",
+		"@vscode/ripgrep": "^1.18.0",
 		"esbuild": "^0.25.12",
 		"eslint": "^9.39.1",
 		"eslint-plugin-n": "^17.23.1",
@@ -120,7 +121,6 @@
 		"@vscode-elements/elements-lite": "^0.4.0",
 		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
-		"@vscode/ripgrep": "1.15.9",
 		"better-sqlite3": "^13.0.3",
 		"micromatch": "^4.0.8",
 		"vue": "^3.5.24"

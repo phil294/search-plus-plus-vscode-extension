@@ -5,7 +5,7 @@
 const { parentPort, workerData } = require('worker_threads')
 const { Indexer } = require('./indexer')
 const { IndexQueue } = require('./index-queue')
-const { set_verbose, log_debug, log_error } = require('./log')
+const { set_verbose, log_debug, log_info, log_error } = require('./log')
 
 if (! parentPort)
 	throw new Error('worker.js must be run as a worker_thread')
@@ -53,13 +53,22 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 	// than maintaining them across millions of per-row inserts. Recreate is crash-safe (init_db uses
 	// `if not exists`). Skipped for small syncs where the rebuild cost would outweigh the saving.
 	let bulk = queue.size > 5000
-	if (bulk)
+	log_info(`sync: ${queue.size} file(s) to (re)index, ${gone.length} gone${bulk ? ', deferred word-index build' : ''}`)
+	if (bulk) {
+		let t = Date.now()
 		indexer.drop_word_indexes()
+		log_info(`drop_word_indexes ${Date.now() - t}ms`)
+	}
+	let t_drain = Date.now()
 	try {
 		await drain()
 	} finally {
-		if (bulk)
+		log_info(`indexing drain done in ${((Date.now() - t_drain) / 1000).toFixed(1)}s`)
+		if (bulk) {
+			let t = Date.now()
 			indexer.create_word_indexes()
+			log_info(`create_word_indexes ${((Date.now() - t) / 1000).toFixed(1)}s`)
+		}
 	}
 }
 

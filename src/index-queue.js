@@ -1,4 +1,4 @@
-let { log_debug, log_error, log_warn } = require('./log')
+let { log_debug, log_info, log_error, log_warn } = require('./log')
 let { readFile } = require('fs/promises')
 let { sleep } = require('./util')
 let { isBinary } = require('./lib/istextorbinary')
@@ -81,7 +81,9 @@ class IndexQueue extends Map {
 			throw new Error('index queue already running')
 		this.is_running = true
 		let size = this.size
-		log_debug('run index queue with ' + size + ' entries...')
+		// log_info('sleep')
+		// await sleep(300000)
+		log_info('run index queue with ' + size + ' entries...')
 		let start = Date.now()
 
 		/** @type {IndexDoc[]} */
@@ -172,6 +174,7 @@ class IndexQueue extends Map {
 
 		log_debug('indexing complete')
 		log_debug(`indexing took ${(Date.now() - start) / 1000} seconds`)
+		log_info(`indexed ${size} file(s) in ${((Date.now() - start) / 1000).toFixed(1)}s`)
 		console.debug(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
 		on_progress(null)
 		this.is_running = false

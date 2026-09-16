@@ -139,6 +139,9 @@ Please open issues in the [GitHub Repository](https://github.com/phil294/search-
 
 There's an optional verbose log in `Output` > `Search++`. It is disabled by default; enable the `search++.verboseLogging` setting to turn it on (no reload required).
 
+> [!WARNING]
+> Keep `search++.verboseLogging` **off** for normal use. It emits one log line per file, which on large workspaces means tens of thousands of messages to the `Output` channel and can stall the extension host for minutes during indexing, drastically slowing it down. Only enable it briefly for troubleshooting. Indexing timings and milestones are always logged, even with verbose logging off.
+
 ## Building
 
 - `npm install`

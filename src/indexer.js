@@ -1,9 +1,14 @@
 let path = require('path')
 const { mkdirSync, existsSync, rmSync, readFileSync } = require('fs')
 const micromatch = require('micromatch')
-const { log_debug, log_error, log_warn } = require('./log')
+const { log_debug, log_info, log_error, log_warn } = require('./log')
 const { word_split_regex } = require('./global')
 const { Database } = require('node-sqlite3-wasm')
+
+// A single index_docs() call blocks the worker thread synchronously (node-sqlite3-wasm is sync).
+// Batches slower than this get a phase breakdown logged (at info level) so pathological files/phases
+// are visible without flooding the log on healthy batches.
+const index_docs_slow_ms = 1500
 
 /**
  * @typedef {object} FileMeta
@@ -110,23 +115,33 @@ module.exports.Indexer = class {
 	}
 
 	index_docs(/** @type {IndexDoc[]} */ docs) {
+		let t_start = Date.now()
 		let paths = docs.map(d => d.path)
 		this.db.exec('begin transaction')
 		// all at the same time is about 40% faster than docs.length individual `.run()`s, that's why all these weird prp stmts are built up like this
 		let single_qmarks_paths = new Array(docs.length).fill('?').join(',')
 		let double_qmarks_paths = new Array(docs.length).fill('(?,?)').join(',')
 		this.delete_doc_by_path(...paths)
+		let t_delete = Date.now()
 		this.db.run(`insert into file (path, mtime) values ${double_qmarks_paths}`, docs.map(d => [d.path, d.mtime]).flat())
 		let new_ids = this.db.all(`select id, path from file where path in (${single_qmarks_paths})`, paths)
 		let new_id_by_path = new_ids.reduce((/** @type {Record<string, string>} */ all, { id, path }) => { all[String(path)] = String(id); return all }, {})
+		let t_file = Date.now()
 		// Only docs with actual text content get their contents indexed. Binary/oversized files
 		// (text === null) are still recorded above as file rows only, so the file picker can link
 		// to them and so they are not rescanned every time.
 		let content_docs = docs.filter(doc => doc.text != null)
+		let text_chars = 0
+		let word_count = 0
+		let t_fts = t_file
+		let t_words = t_file
 		if (content_docs.length) {
+			for (let doc of content_docs)
+				text_chars += String(doc.text).length
 			let double_qmarks_content = new Array(content_docs.length).fill('(?,?)').join(',')
 			// This makes the text be split by FTS internally
 			this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_content}`, content_docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
+			t_fts = Date.now()
 			// And this requires manual splitting. We need both due to
 			// case presevation, unfortunately.
 			let docs_with_words = content_docs.map(doc => ({
@@ -140,6 +155,7 @@ module.exports.Indexer = class {
 			// we need to store both as sqlite's case insensitivity is purely ascii-based unless you install icu
 			// which is not included in (and probably pretty hard with) wasm
 			let rows = docs_with_words.flatMap(doc => doc.words.map(word => [new_id_by_path[doc.path] || '??', word, word.toLowerCase()]))
+			word_count = rows.length
 			// Reusing ONE prepared multi-row insert is dramatically faster than re-preparing a fresh
 			// statement per chunk: statement preparation (not the actual b-tree insert) dominated indexing
 			// time on word-heavy files (e.g. a single .po batch stalled minutes). 500 rows stays well below
@@ -156,10 +172,22 @@ module.exports.Indexer = class {
 			let remainder = rows.slice(full_chunks * rows_per_chunk)
 			if (remainder.length)
 				this.db.run(`insert or ignore into file_content (file_id, word, word_lower) values ${new Array(remainder.length).fill('(?,?,?)').join(',')}`, remainder.flat())
+			t_words = Date.now()
 		}
 		// TODO: insert into fts(fts) values ('optimize')
 		// other optimize..?
 		this.db.exec('commit')
+		let t_commit = Date.now()
+		if (t_commit - t_start > index_docs_slow_ms) {
+			let biggest_path = ''
+			let biggest_chars = 0
+			for (let doc of content_docs)
+				if (doc.text != null && String(doc.text).length > biggest_chars) {
+					biggest_chars = String(doc.text).length
+					biggest_path = doc.path
+				}
+			log_info(`slow index batch ${t_commit - t_start}ms: delete=${t_delete - t_start} file+ids=${t_file - t_delete} fts=${t_fts - t_file} words=${t_words - t_fts} commit=${t_commit - t_words} | docs=${docs.length} content=${content_docs.length} words=${word_count} text=${(text_chars / 1024 / 1024).toFixed(1)}MB biggest=${(biggest_chars / 1024 / 1024).toFixed(1)}MB ${biggest_path}`)
+		}
 	}
 
 	async delete_doc_by_path(/** @type {string[]} */ ...paths) {

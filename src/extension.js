@@ -2,7 +2,7 @@ let vscode = require('vscode')
 let { debounce } = require('./util')
 const { isMatch } = require('micromatch')
 const { stat } = require('fs/promises')
-const { log_debug, log_error, log_warn, set_verbose } = require('./log')
+const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log')
 const { IndexerClient } = require('./indexer-client')
 const { EXT_ID, word_split_regex } = require('./global')
 const { find_files, find_indexed_paths } = require('./find-files')
@@ -146,6 +146,22 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	vscode.workspace.onDidChangeWorkspaceFolders(scan_debounced)
 
 	let watcher = vscode.workspace.createFileSystemWatcher('**')
+	// Diagnostic: indexing runs in a worker thread, so a frozen status bar/log means the extension-HOST
+	// event loop is blocked, not the indexer. This heartbeat logs late ticks and attributes how many
+	// `**`-watcher events (and how much isMatch/get_exclude_patterns time) landed in that window.
+	let watcher_events = 0
+	let file_changed_ms = 0
+	let last_beat = Date.now()
+	let heartbeat = setInterval(() => {
+		let now = Date.now()
+		let lag = now - last_beat - 1000
+		last_beat = now
+		if (lag > 1000)
+			log_info(`host event-loop blocked ~${(lag / 1000).toFixed(1)}s | watcher_events=${watcher_events} isMatch=${file_changed_ms}ms in window`)
+		watcher_events = 0
+		file_changed_ms = 0
+	}, 1000)
+	context.subscriptions.push({ dispose: () => clearInterval(heartbeat) })
 	/** @type {Map<string, vscode.Uri>} */
 	let pending_changed = new Map()
 	let flush_changed = async () => {
@@ -171,12 +187,16 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			indexer_client.index_files(/** @type {FileMeta[]} */ (metas)).catch((/** @type any */ e) => log_error('index_files failed', e)) // eslint-disable-line no-extra-parens
 	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
+		watcher_events++
 		log_debug('file changed', uri.fsPath)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			return scan_debounced()
 		// files.watcherExclude files should actually never arrive here, but for the other three settings,
 		// an additional filtering here is required:
-		if (isMatch(uri.path, get_exclude_patterns())) { // TODO test
+		let t = Date.now()
+		let excluded = isMatch(uri.path, get_exclude_patterns())
+		file_changed_ms += Date.now() - t
+		if (excluded) { // TODO test
 			log_debug('but is excluded')
 			return false
 		}

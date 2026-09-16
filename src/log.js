@@ -48,6 +48,11 @@ module.exports.log_debug = (/** @type any[] */...s) => {
 		return
 	emit('debug', s)
 }
+/** Always written to the output channel (even with verbose logging off), but kept low-volume:
+ * use for indexing milestones/timings only, not per-file spam. No console output. */
+module.exports.log_info = (/** @type any[] */...s) => {
+	emit('info', s)
+}
 module.exports.log_warn = (/** @type any[] */...s) => {
 	console.warn('Search++', ...s)
 	console.trace()

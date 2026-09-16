@@ -89,6 +89,10 @@ class IndexerClient {
 		return /** @type {Promise<string[]>} */ (this.call('find_paths_by_word', word, limit)) // eslint-disable-line no-extra-parens
 	}
 
+	find_paths_fuzzy(/** @type string[] */ tokens, /** @type number */ limit) {
+		return /** @type {Promise<string[]>} */ (this.call('find_paths_fuzzy', tokens, limit)) // eslint-disable-line no-extra-parens
+	}
+
 	find_paths_with_lines_by_word(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_paths_with_lines_by_word', word, is_partial, limit, filter)) // eslint-disable-line no-extra-parens
 	}

@@ -46,33 +46,34 @@ function file_icon(/** @type string */ path) {
 	return vscode.Uri.joinPath(icons_dir, icon_file_name(path))
 }
 
-const separator_chars = new Set([' ', '-', '_', '.', '/', '\\'])
+const separator_codes = new Set([0x20, 0x2d, 0x5f, 0x2e, 0x2f, 0x5c]) // space - _ . / \
 
 /** true if position `i` starts a new word (string start, after a separator, or a camelCase hump). */
 function is_word_start(/** @type string */ target, /** @type number */ i) {
 	if (i === 0)
 		return true
-	let prev = target[i - 1] || ''
-	if (separator_chars.has(prev))
+	let prev = target.charCodeAt(i - 1)
+	if (separator_codes.has(prev))
 		return true
-	let cur = target[i] || ''
-	return prev >= 'a' && prev <= 'z' && cur >= 'A' && cur <= 'Z'
+	let cur = target.charCodeAt(i)
+	return prev >= 97 && prev <= 122 && cur >= 65 && cur <= 90
 }
 
-/** case-insensitive fuzzy match returning a quality score (higher = better) or null for no match.
- * A short DP finds the best alignment, rewarding contiguous runs and word-boundary starts and
+/** fuzzy match returning a quality score (higher = better) or null for no match. `q` and `t` are the
+ * already-lowercased query token and target; `target` keeps its original case for word-boundary/camelCase
+ * detection. A short DP finds the best alignment, rewarding contiguous runs and word-boundary starts and
  * penalising gaps, so a tight match like `default-data.ts` outranks a scattered `css-defaults...`. */
-function subsequence_match(/** @type string */ query, /** @type string */ target) {
-	if (! query)
+function subsequence_match(/** @type string */ q, /** @type string */ target, /** @type string */ t) {
+	if (! q)
 		return 0
-	let q = query.toLowerCase()
-	let t = target.toLowerCase()
 	let n = q.length
 	let m = t.length
-	// fast reject: bail unless q is a subsequence of t at all (keeps the DP off the hot path)
+	// fast reject: bail unless q is a subsequence of t at all (keeps the DP off the hot path).
+	// charCodeAt (not t[j]) is critical: string indexing allocates a one-char string per access,
+	// which over hundreds of thousands of files per keystroke dominated the whole loop.
 	let qi = 0
 	for (let j = 0; j < m && qi < n; j++)
-		if (t[j] === q[qi])
+		if (t.charCodeAt(j) === q.charCodeAt(qi))
 			qi++
 	if (qi < n)
 		return null
@@ -81,8 +82,9 @@ function subsequence_match(/** @type string */ query, /** @type string */ target
 	let prev = new Array(m).fill(NEG)
 	for (let k = 0; k < n; k++) {
 		let cur = new Array(m).fill(NEG)
+		let qk = q.charCodeAt(k)
 		for (let j = k; j < m; j++) {
-			if (t[j] !== q[k])
+			if (t.charCodeAt(j) !== qk)
 				continue
 			if (k === 0) {
 				let s = is_word_start(target, j) ? 5 : 0
@@ -112,13 +114,12 @@ function subsequence_match(/** @type string */ query, /** @type string */ target
 	return result === NEG ? null : result
 }
 
-/** True if every token occurs in `target` left-to-right in the same order they were typed (each as a
- * contiguous substring after the previous one). Used to reward matches that preserve the query order. */
-function tokens_in_order(/** @type string[] */ tokens, /** @type string */ target) {
-	let t = target.toLowerCase()
+/** True if every token occurs in `t` (already lowercased) left-to-right in the same order they were
+ * typed (each as a contiguous substring after the previous one). Rewards query-order-preserving matches. */
+function tokens_in_order(/** @type string[] */ tokens, /** @type string */ t) {
 	let pos = 0
 	for (let token of tokens) {
-		let idx = t.indexOf(token.toLowerCase(), pos)
+		let idx = t.indexOf(token, pos)
 		if (idx === -1)
 			return false
 		pos = idx + token.length
@@ -126,22 +127,21 @@ function tokens_in_order(/** @type string[] */ tokens, /** @type string */ targe
 	return true
 }
 
-/** Splits the query on whitespace and requires every token to match (in any order), so
- * `a b c` matches `A1 bqwerde.cx`. Returns the summed score or null if any token is missing.
- * Tokens that appear in the typed order earn a bonus, so `restaurant widget css` ranks
+/** Scores `target` against pre-split, pre-lowercased query `tokens`; requires every token to match (in
+ * any order). `target_lower` is the lowercased target. Returns the summed score or null if any token is
+ * missing. Tokens appearing in the typed order earn a bonus, so `restaurant widget css` ranks
  * `restaurant-widget.css` above `css-restaurant-widget.tpl`. */
-function fuzzy_match(/** @type string */ query, /** @type string */ target) {
-	let tokens = query.trim().split(/\s+/).filter(Boolean)
+function score_target(/** @type string[] */ tokens, /** @type string */ target, /** @type string */ target_lower) {
 	if (! tokens.length)
 		return 0
 	let total = 0
 	for (let token of tokens) {
-		let s = subsequence_match(token, target)
+		let s = subsequence_match(token, target, target_lower)
 		if (s === null)
 			return null
 		total += s
 	}
-	if (tokens.length > 1 && tokens_in_order(tokens, target))
+	if (tokens.length > 1 && tokens_in_order(tokens, target_lower))
 		total += tokens.length * 25
 	return total
 }
@@ -182,8 +182,16 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	/** @type {NodeJS.Timeout|null} */
 	let search_debounce = null
 	let workspace_token = 0
+	let file_token = 0
+	/** @type {NodeJS.Timeout|null} */
+	let files_debounce = null
+	let files_running = false
+	/** @type {string|null} */
+	let files_pending = null
 
-	let update_files = (/** @type string */ query) => {
+	let update_files = async (/** @type string */ query) => {
+		console.time('senf')
+		let my_token = ++file_token
 		/** @type {number|null} */
 		let line_no = null
 		let m = query.match(/^(.*):(\d+)$/)
@@ -191,27 +199,53 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 			query = m[1] || ''
 			line_no = parseInt(m[2] || '', 10)
 		}
+		let tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean)
+
+		let render = (/** @type {{p:string, base:string, rel:string}[]} */ rows) => {
+			if (my_token !== file_token)
+				return
+			qp.items = rows.slice(0, 500).map(({ p, base, rel }) => ({
+				label: base,
+				description: dir_of(rel),
+				iconPath: file_icon(p),
+				alwaysShow: true,
+				_action: { type: 'open', path: p, line: line_no },
+			}))
+		}
+
+		if (! tokens.length) {
+			// no query: least recently opened first (never-opened = 0), shortest path as tiebreak
+			let rows = all_paths.map(p => ({ p, recency: recency ? recency.get(p) : 0 }))
+			rows.sort((a, b) => a.recency - b.recency || a.p.length - b.p.length)
+			render(rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) })))
+			return
+		}
+
+		// SQL prefilters to the subsequence-matchable set (lossless superset of the JS matcher), so the
+		// full per-file scan runs in C on the worker thread and JS only ranks the small candidate set.
+		let candidates
+		try {
+			candidates = await indexer_client.find_paths_fuzzy(tokens, 10000)
+		} catch (e) {
+			log_error('file picker: find_paths_fuzzy failed', e)
+			return
+		}
+		if (my_token !== file_token)
+			return
+
 		let scored = []
-		for (let p of all_paths) {
+		for (let p of candidates) {
 			let rel = relativize(p, roots)
 			let base = basename(p)
-			let base_score = fuzzy_match(query, base)
+			let base_score = score_target(tokens, base, base.toLowerCase())
 			// filename matches rank above path-only matches; both fall back to the full relative path
-			let score = base_score !== null ? base_score + 1000 : fuzzy_match(query, rel)
+			let score = base_score !== null ? base_score + 1000 : score_target(tokens, rel, rel.toLowerCase())
 			if (score !== null)
-				scored.push({ p, rel, base, score: query ? score : 0, recency: recency ? recency.get(p) : 0 })
+				scored.push({ p, rel, base, score, recency: recency ? recency.get(p) : 0 })
 		}
-		// least recently opened first (never-opened = 0 sorts before recently opened)
 		scored.sort((a, b) => b.score - a.score || a.recency - b.recency || a.rel.length - b.rel.length)
-		/** @type {any[]} */
-		let items = scored.slice(0, 500).map(({ p, base, rel }) => ({
-			label: base,
-			description: dir_of(rel),
-			iconPath: file_icon(p),
-			alwaysShow: true,
-			_action: { type: 'open', path: p, line: line_no },
-		}))
-		qp.items = items
+		render(scored)
+		console.timeEnd('senf')
 	}
 
 	let update_text_in_file = (/** @type string */ query) => {
@@ -287,6 +321,34 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		}, 120)
 	}
 
+	// Single-flight: never run two update_files bodies at once. Keystrokes arriving mid-run collapse
+	// into files_pending (latest wins), so the in-flight search yields to the newest query when it ends.
+	let run_files = async (/** @type string */ value) => {
+		files_running = true
+		try {
+			await update_files(value)
+		} finally {
+			files_running = false
+			if (files_pending !== null) {
+				let next = files_pending
+				files_pending = null
+				run_files(next)
+			}
+		}
+	}
+
+	let schedule_files = (/** @type string */ value) => {
+		if (files_debounce)
+			clearTimeout(files_debounce)
+		files_debounce = setTimeout(() => {
+			files_debounce = null
+			if (files_running)
+				files_pending = value
+			else
+				run_files(value)
+		}, 100)
+	}
+
 	let update = () => {
 		let value = qp.value
 		if (value.startsWith('@'))
@@ -297,7 +359,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 			return update_text_in_file(value)
 		if (mode === 'text_in_workspace')
 			return update_text_in_workspace(value)
-		return update_files(value)
+		return schedule_files(value)
 	}
 
 	qp.onDidChangeValue(update)

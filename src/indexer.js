@@ -304,6 +304,28 @@ module.exports.Indexer = class {
 		return paths.map(p => String(p))
 	}
 
+	/** Candidate paths for the file picker's fuzzy matcher. Each lowercased token becomes a
+	 * `%c1%c2%...%` LIKE pattern, i.e. exactly the subsequence the JS matcher accepts, so this
+	 * prefilter is a lossless superset (no false negatives) that runs the full scan in C off the
+	 * UI thread. Ordered by path length so a truncating LIMIT keeps the most concise candidates. */
+	find_paths_fuzzy(/** @type string[] */ tokens, /** @type number */ limit) {
+		if (! tokens.length)
+			return []
+		let clauses = []
+		/** @type {any[]} */
+		let params = []
+		for (let token of tokens) {
+			let pattern = '%'
+			for (let ch of token.toLowerCase())
+				pattern += (ch === '%' || ch === '_' || ch === '\\' ? '\\' + ch : ch) + '%'
+			clauses.push("path like ? escape '\\'")
+			params.push(pattern)
+		}
+		params.push(limit)
+		return this.db.all(`select path from file where ${clauses.join(' and ')} order by length(path) limit ?`, params)
+			.map(r => String(r.path))
+	}
+
 	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
 		let start = Date.now()

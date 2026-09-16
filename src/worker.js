@@ -1,5 +1,5 @@
-// Runs in a worker_thread. Owns the single SQLite connection (node-sqlite3-wasm cannot be
-// safely accessed from multiple connections/threads at once) and does all indexing work off
+// Runs in a worker_thread. Owns the single SQLite connection (better-sqlite3 is synchronous and
+// a connection must not be shared across threads) and does all indexing work off
 // the extension host, communicating via RPC messages over parentPort.
 
 const { parentPort, workerData } = require('worker_threads')

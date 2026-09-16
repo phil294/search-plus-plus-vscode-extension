@@ -102,6 +102,7 @@
 	"devDependencies": {
 		"@eslint/eslintrc": "^3.3.1",
 		"@eslint/js": "^9.39.1",
+		"@types/better-sqlite3": "^9.6.0",
 		"@types/micromatch": "^4.0.10",
 		"@types/node": "^24.10.0",
 		"@types/vscode": "1.104.0",
@@ -120,8 +121,8 @@
 		"@vscode/codicons": "^0.0.41",
 		"@vscode/dts": "^0.4.1",
 		"@vscode/ripgrep": "1.15.9",
+		"better-sqlite3": "^13.0.3",
 		"micromatch": "^4.0.8",
-		"node-sqlite3-wasm": "^0.8.51",
 		"vue": "^3.5.24"
 	}
 }

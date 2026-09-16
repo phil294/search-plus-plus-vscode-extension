@@ -3,12 +3,63 @@ const { mkdirSync, existsSync, rmSync, readFileSync } = require('fs')
 const micromatch = require('micromatch')
 const { log_debug, log_info, log_error, log_warn } = require('./log')
 const { word_split_regex } = require('./global')
-const { Database } = require('node-sqlite3-wasm')
+const BetterSqlite3 = require('better-sqlite3')
 
-// A single index_docs() call blocks the worker thread synchronously (node-sqlite3-wasm is sync).
+// A single index_docs() call blocks the worker thread synchronously (better-sqlite3 is sync).
 // Batches slower than this get a phase breakdown logged (at info level) so pathological files/phases
 // are visible without flooding the log on healthy batches.
 const index_docs_slow_ms = 1500
+
+// Thin adapter giving better-sqlite3 the call surface the code used with node-sqlite3-wasm:
+// exec(sql), run(sql, params?), all(sql, params?), and prepare(sql) -> { run(values), finalize() }.
+class Db {
+	/** @param {string} db_path */
+	constructor(db_path) {
+		this._db = new BetterSqlite3(db_path)
+	}
+
+	/** @param {string} sql */
+	exec(sql) {
+		this._db.exec(sql)
+	}
+
+	/**
+	 * @param {string} sql
+	 * @param {any[]} [params]
+	 */
+	run(sql, params) {
+		return params === undefined ? this._db.prepare(sql).run() : this._db.prepare(sql).run(params)
+	}
+
+	/**
+	 * @param {string} sql
+	 * @param {any[]} [params]
+	 * @returns {any[]}
+	 */
+	all(sql, params) {
+		return params === undefined ? this._db.prepare(sql).all() : this._db.prepare(sql).all(params)
+	}
+
+	/**
+	 * @param {string} sql
+	 * @param {any[]} [params]
+	 * @returns {any}
+	 */
+	get(sql, params) {
+		return params === undefined ? this._db.prepare(sql).get() : this._db.prepare(sql).get(params)
+	}
+
+	/** @param {string} sql */
+	prepare(sql) {
+		let stmt = this._db.prepare(sql)
+		// finalize() is a no-op: better-sqlite3 manages statement lifetimes itself; kept for call-site parity.
+		return { run: (/** @type {any[]} */ values) => stmt.run(values), finalize: () => {} }
+	}
+
+	close() {
+		this._db.close()
+	}
+}
 
 /**
  * @typedef {object} FileMeta
@@ -31,7 +82,7 @@ const index_docs_slow_ms = 1500
  * @property {number} mtime
  */
 
-/** wrapper around sqlite3 fts wasm. Owned by the indexing worker thread (single db connection). */
+/** wrapper around sqlite3 fts (better-sqlite3). Owned by the indexing worker thread (single db connection). */
 module.exports.Indexer = class {
 	constructor(/** @type {{storage_path:string, rows_per_chunk?:number, min_word_length?:number, extra_pragmas?:string}} */ { storage_path, rows_per_chunk = 500, min_word_length = 3, extra_pragmas = '' }) {
 		this.word_split_regex = word_split_regex
@@ -44,7 +95,7 @@ module.exports.Indexer = class {
 		log_debug('search index: ' + index_path)
 
 		let db_path = path.join(index_path, 'index4.db') // version bump after scheme change
-		this.db = new Database(db_path)
+		this.db = new Db(db_path)
 
 		try {
 			this.init_db()
@@ -125,7 +176,7 @@ module.exports.Indexer = class {
 		let t_delete = Date.now()
 		this.db.run(`insert into file (path, mtime) values ${double_qmarks_paths}`, docs.map(d => [d.path, d.mtime]).flat())
 		let new_ids = this.db.all(`select id, path from file where path in (${single_qmarks_paths})`, paths)
-		let new_id_by_path = new_ids.reduce((/** @type {Record<string, string>} */ all, { id, path }) => { all[String(path)] = String(id); return all }, {})
+		let new_id_by_path = new_ids.reduce((/** @type {Record<string, number>} */ all, { id, path }) => { all[String(path)] = Number(id); return all }, {})
 		let t_file = Date.now()
 		// Only docs with actual text content get their contents indexed. Binary/oversized files
 		// (text === null) are still recorded above as file rows only, so the file picker can link
@@ -140,7 +191,7 @@ module.exports.Indexer = class {
 				text_chars += String(doc.text).length
 			let double_qmarks_content = new Array(content_docs.length).fill('(?,?)').join(',')
 			// This makes the text be split by FTS internally
-			this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_content}`, content_docs.map(doc => [new_id_by_path[doc.path] || '??', doc.text]).flat())
+			this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_content}`, content_docs.map(doc => [new_id_by_path[doc.path], doc.text]).flat())
 			t_fts = Date.now()
 			// And this requires manual splitting. We need both due to
 			// case presevation, unfortunately.
@@ -153,13 +204,13 @@ module.exports.Indexer = class {
 			// let double_qmarks_words = new Array(total_words).fill('(?,?)').join(',')
 			// this.db.run(`insert or ignore into file_content (file_id, word) values ${double_qmarks_words}`,
 			// we need to store both as sqlite's case insensitivity is purely ascii-based unless you install icu
-			// which is not included in (and probably pretty hard with) wasm
-			let rows = docs_with_words.flatMap(doc => doc.words.map(word => [new_id_by_path[doc.path] || '??', word, word.toLowerCase()]))
+			// which is not included in the bundled sqlite build
+			let rows = docs_with_words.flatMap(doc => doc.words.map(word => [new_id_by_path[doc.path], word, word.toLowerCase()]))
 			word_count = rows.length
 			// Reusing ONE prepared multi-row insert is dramatically faster than re-preparing a fresh
 			// statement per chunk: statement preparation (not the actual b-tree insert) dominated indexing
 			// time on word-heavy files (e.g. a single .po batch stalled minutes). 500 rows stays well below
-			// SQLite's bound-parameter limit while minimising WASM round-trips.
+			// SQLite's bound-parameter limit while minimising per-statement preparation overhead.
 			const rows_per_chunk = this.rows_per_chunk
 			log_debug(`Inserting total ${rows.length} words = ${Math.ceil(rows.length / rows_per_chunk)} chunks into file_content`)
 			let full_chunks = Math.floor(rows.length / rows_per_chunk)
@@ -197,7 +248,7 @@ module.exports.Indexer = class {
 		for (let i = 0; i < paths.length; i += chunk) {
 			let group = paths.slice(i, i + chunk)
 			let qmarks = new Array(group.length).fill('?').join(',')
-			let old_ids = this.db.all(`select id from file where path in (${qmarks})`, group).map(r => String(r.id))
+			let old_ids = this.db.all(`select id from file where path in (${qmarks})`, group).map(r => Number(r.id))
 			this.db.run(`delete from file where path in (${qmarks})`, group)
 			if (old_ids.length)
 				this.db.run(`delete from file_content_search_index_fts_trigram where rowid in (${new Array(old_ids.length).fill('?').join(',')})`, old_ids)

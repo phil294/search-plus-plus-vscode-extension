@@ -274,9 +274,10 @@ module.exports.Indexer = class {
 		return /** @type {IndexDoc[]} */ (rows) // eslint-disable-line no-extra-parens
 	}
 
-	/** every recorded file path, including binary/oversized files (used by the file picker). */
+	/** every recorded file path with its mtime (unix seconds), including binary/oversized files
+	 * (used by the file picker). */
 	all_file_paths() {
-		return this.db.all('select path from file').map(r => String(r.path))
+		return this.db.all('select path, mtime from file').map(r => ({ path: String(r.path), mtime: Number(r.mtime) }))
 	}
 
 	autocomplete_word(/** @type string */ word, /** @type number */ limit) {
@@ -313,9 +314,9 @@ module.exports.Indexer = class {
 		return paths.map(p => String(p))
 	}
 
-	/** Candidate paths for the file picker's fuzzy matcher. Each lowercased token becomes a
-	 * `%c1%c2%...%` LIKE pattern, i.e. exactly the subsequence the JS matcher accepts, so this
-	 * prefilter is a lossless superset (no false negatives) that runs the full scan in C off the
+	/** Candidate paths (with mtime, unix seconds) for the file picker's fuzzy matcher. Each lowercased
+	 * token becomes a `%c1%c2%...%` LIKE pattern, i.e. exactly the subsequence the JS matcher accepts,
+	 * so this prefilter is a lossless superset (no false negatives) that runs the full scan in C off the
 	 * UI thread. Ordered by path length so a truncating LIMIT keeps the most concise candidates. */
 	find_paths_fuzzy(/** @type string[] */ tokens, /** @type number */ limit) {
 		if (! tokens.length)
@@ -331,8 +332,8 @@ module.exports.Indexer = class {
 			params.push(pattern)
 		}
 		params.push(limit)
-		return this.db.all(`select path from file where ${clauses.join(' and ')} order by length(path) limit ?`, params)
-			.map(r => String(r.path))
+		return this.db.all(`select path, mtime from file where ${clauses.join(' and ')} order by length(path) limit ?`, params)
+			.map(r => ({ path: String(r.path), mtime: Number(r.mtime) }))
 	}
 
 	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {

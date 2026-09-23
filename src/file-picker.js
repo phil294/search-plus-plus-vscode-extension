@@ -28,6 +28,23 @@ let dir_of = (/** @type string */ rel) => {
 	return i === -1 ? '' : rel.slice(0, i)
 }
 
+// Ranking tuning for the file picker (see score_target / update_files below):
+// - recently-OPENED files (RecencyStore) only count for this long; older opens are ignored so a file
+//   opened once months ago doesn't keep floating to the top forever.
+const recency_ranking_window_ms = 5 * 24 * 60 * 60 * 1000
+// - recently-MODIFIED files (file mtime) get a score bonus that decays smoothly with age, so a file
+//   touched today clearly outranks similar matches from a year ago without ever overriding the
+//   basename-vs-path-match distinction (+1000) or dominating a much better fuzzy match.
+const mtime_bonus_max = 300
+const mtime_bonus_half_life_days = 14
+
+/** Score bonus in [0, mtime_bonus_max] for a file last modified `mtime` (unix seconds) ago, halving
+ * every `mtime_bonus_half_life_days` days. */
+function mtime_bonus(/** @type number */ mtime) {
+	let age_days = Math.max(0, (Date.now() / 1000 - mtime) / 86400)
+	return mtime_bonus_max * 0.5 ** (age_days / mtime_bonus_half_life_days)
+}
+
 /** @type {import('vscode').Uri|null} */
 let icons_dir = null
 
@@ -165,6 +182,10 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	let qp = vscode.window.createQuickPick()
 	qp.matchOnDescription = false
 	qp.matchOnDetail = false
+	// We rank items ourselves (all use alwaysShow); stop VS Code re-sorting them by label-vs-input
+	// score, which otherwise tie-breaks alphabetically and buries our recency/mtime order.
+	// `sortByLabel` exists at runtime but is missing from our pinned @types/vscode.
+	;(/** @type {any} */ (qp)).sortByLabel = false // eslint-disable-line no-extra-parens
 	qp.placeholder = mode === 'text_in_file'
 		? 'Search text in the current file'
 		: mode === 'text_in_workspace'
@@ -179,7 +200,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	let original_selection = preview_editor?.selection
 	let accepted = false
 
-	/** @type string[] */
+	/** @type {{path:string, mtime:number}[]} */
 	let all_paths = []
 	try {
 		all_paths = await indexer_client.all_file_paths()
@@ -198,7 +219,6 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	let files_pending = null
 
 	let update_files = async (/** @type string */ query) => {
-		console.time('senf')
 		let my_token = ++file_token
 		/** @type {number|null} */
 		let line_no = null
@@ -222,9 +242,16 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		}
 
 		if (! tokens.length) {
-			// no query: least recently opened first (never-opened = 0), shortest path as tiebreak
-			let rows = all_paths.map(p => ({ p, recency: recency ? recency.get(p) : 0 }))
-			rows.sort((a, b) => a.recency - b.recency || a.p.length - b.p.length)
+			// no query: recently-opened files first (within the last 5 days; older opens don't count),
+			// then most-recently-modified, then shortest path as a final tiebreak
+			let now = Date.now()
+			let rows = all_paths.map(({ path: p, mtime }) => {
+				let recency_ts = recency ? recency.get(p) : 0
+				if (now - recency_ts > recency_ranking_window_ms)
+					recency_ts = 0
+				return { p, recency_ts, mtime }
+			})
+			rows.sort((a, b) => b.recency_ts - a.recency_ts || b.mtime - a.mtime || a.p.length - b.p.length)
 			render(rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) })))
 			return
 		}
@@ -242,18 +269,25 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 			return
 
 		let scored = []
-		for (let p of candidates) {
+		// Only treat a basename subsequence match as a "filename match" (the +1000 tier) when it's
+		// reasonably tight: at least half of an ideal contiguous, word-anchored match for these tokens.
+		// Otherwise a long basename that merely happens to contain the tokens scattered across it
+		// (e.g. `lang po .po` fuzzy-hitting `service.…testFailedDueActiveBookings.fail.html`) would
+		// outrank genuine `lang/po/*.po` path matches.
+		let min_base_score = 0.5 * tokens.reduce((s, t) => s + (6 * t.length - 1), 0)
+		for (let { path: p, mtime } of candidates) {
 			let rel = relativize(p, roots)
 			let base = basename(p)
 			let base_score = score_target(tokens, base, base.toLowerCase())
 			// filename matches rank above path-only matches; both fall back to the full relative path
-			let score = base_score !== null ? base_score + 1000 : score_target(tokens, rel, rel.toLowerCase())
+			let score = base_score !== null && base_score >= min_base_score
+				? base_score + 1000
+				: score_target(tokens, rel, rel.toLowerCase())
 			if (score !== null)
-				scored.push({ p, rel, base, score, recency: recency ? recency.get(p) : 0 })
+				scored.push({ p, rel, base, score: score + mtime_bonus(mtime), recency: recency ? recency.get(p) : 0 })
 		}
-		scored.sort((a, b) => b.score - a.score || a.recency - b.recency || a.rel.length - b.rel.length)
+		scored.sort((a, b) => b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
 		render(scored)
-		console.timeEnd('senf')
 	}
 
 	let update_text_in_file = (/** @type string */ query) => {

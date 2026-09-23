@@ -10,7 +10,7 @@ class IndexerClient {
 		this._id = 0
 		/** @type {Map<number,{resolve:(v:any)=>void, reject:(e:any)=>void}>} */
 		this._pending = new Map()
-		/** @type {string[]|null} */
+		/** @type {{path:string, mtime:number}[]|null} */
 		this._file_paths_cache = null
 		// In development the sources ship as-is (src/worker.js). In a packaged build, src/ is
 		// stripped and the worker is bundled to the extension root as worker.js (see release.sh).
@@ -74,10 +74,11 @@ class IndexerClient {
 		return /** @type {Promise<import('./indexer').IndexDoc[]>} */ (this.call('all_meta_docs')) // eslint-disable-line no-extra-parens
 	}
 
-	/** cached; invalidated whenever the index changes. */
+	/** cached; invalidated whenever the index changes. Each entry carries mtime (unix seconds) so the
+	 * file picker can rank by modification time. */
 	async all_file_paths() {
 		if (! this._file_paths_cache)
-			this._file_paths_cache = /** @type string[] */ (await this.call('all_file_paths')) // eslint-disable-line no-extra-parens
+			this._file_paths_cache = /** @type {{path:string, mtime:number}[]} */ (await this.call('all_file_paths')) // eslint-disable-line no-extra-parens
 		return this._file_paths_cache
 	}
 
@@ -90,7 +91,7 @@ class IndexerClient {
 	}
 
 	find_paths_fuzzy(/** @type string[] */ tokens, /** @type number */ limit) {
-		return /** @type {Promise<string[]>} */ (this.call('find_paths_fuzzy', tokens, limit)) // eslint-disable-line no-extra-parens
+		return /** @type {Promise<{path:string, mtime:number}[]>} */ (this.call('find_paths_fuzzy', tokens, limit)) // eslint-disable-line no-extra-parens
 	}
 
 	find_paths_with_lines_by_word(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {

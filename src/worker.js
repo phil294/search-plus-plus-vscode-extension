@@ -11,8 +11,9 @@ if (! parentPort)
 	throw new Error('worker.js must be run as a worker_thread')
 
 set_verbose(workerData.verbose)
+const index_params = workerData.index_params || {}
 const indexer = new Indexer({ storage_path: workerData.storage_path })
-const queue = new IndexQueue(indexer)
+const queue = new IndexQueue(indexer, { max_index_size: index_params.max_index_size, max_avg_line_length: index_params.max_avg_line_length })
 
 let on_progress = (/** @type {number|null} */ value) =>
 	parentPort?.postMessage({ type: 'progress', value })
@@ -91,11 +92,28 @@ async function delete_paths(/** @type {string[]} */ paths) {
 	await indexer.delete_doc_by_path(...paths)
 }
 
+/** Apply changed index-shaping settings to the live worker so newly added/changed files use them.
+ * Existing files are left untouched (rebuilding a large index is expensive); the "Rebuild Index"
+ * command wipes and reindexes everything when that's actually wanted. */
+function set_index_params(/** @type {{max_index_size?:number, max_avg_line_length?:number}} */ params) {
+	if (params.max_index_size != null)
+		queue.max_index_size = params.max_index_size
+	if (params.max_avg_line_length != null)
+		queue.max_avg_line_length = params.max_avg_line_length
+}
+
+/** Wipe the whole index. Used by the manual "Rebuild Index" command; the host then triggers a scan. */
+function clear_index() {
+	indexer.clear_all()
+}
+
 /** @type {Record<string, (...args:any[])=>any>} */
 const methods = {
 	sync_files,
 	index_files,
 	delete_paths,
+	set_index_params,
+	clear_index,
 	all_meta_docs: () => indexer.all_meta_docs(),
 	all_file_paths: () => indexer.all_file_paths(),
 	autocomplete_word: (/** @type string */ word, /** @type number */ limit) => indexer.autocomplete_word(word, limit),

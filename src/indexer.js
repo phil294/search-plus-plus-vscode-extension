@@ -166,6 +166,13 @@ module.exports.Indexer = class {
 		this.db.exec('create index if not exists idx_file_content_word on file_content(word); create index if not exists idx_file_content_word_lower on file_content(word_lower);')
 	}
 
+	/** Wipe every indexed file and its content. Used by the manual "Rebuild Index" command so the next
+	 * full scan reindexes from scratch. file_content rows cascade via the foreign key; the contentless
+	 * FTS table is cleared explicitly. */
+	clear_all() {
+		this.db.exec('delete from file; delete from file_content_search_index_fts_trigram;')
+	}
+
 	/** Folds the WAL back into the main db file. Passive auto-checkpointing alone can lag far behind
 	 * during a large (re)index, leaving index5.db-wal at hundreds of MB until VS Code restarts; call
 	 * this once a batch of writes is done (not per-write, since TRUNCATE blocks concurrent readers). */

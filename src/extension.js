@@ -37,9 +37,19 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let initial_verbose = !! vscode.workspace.getConfiguration().get('search++.verboseLogging')
 	set_verbose(initial_verbose)
 
+	// Index-shaping settings read on the host and forwarded to the worker (at spawn + on change).
+	let get_index_params = () => {
+		let cfg = vscode.workspace.getConfiguration()
+		return {
+			max_index_size: Number(cfg.get('search++.maxIndexSizeMb') ?? 20) * 1024 * 1024,
+			max_avg_line_length: Number(cfg.get('search++.maxAverageLineLength') ?? 300),
+		}
+	}
+
 	let indexer_client = new IndexerClient(context, {
 		storage_path: context.storageUri.fsPath,
 		verbose: initial_verbose,
+		index_params: get_index_params(),
 		on_progress: (/** @type number? */ p) => on_index_queue_progress(p),
 	})
 	context.subscriptions.push({ dispose: () => indexer_client.dispose() })
@@ -222,9 +232,17 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	vscode.workspace.onDidChangeConfiguration((event) => {
 		if (event.affectsConfiguration('search++.verboseLogging'))
 			update_verbose()
+		if (event.affectsConfiguration('search++.maxIndexSizeMb') ||
+			event.affectsConfiguration('search++.maxAverageLineLength'))
+			// applied to newly added/changed files only; existing files keep their current state until a
+			// manual rebuild (wiping a huge index on every tweak would be far too expensive).
+			indexer_client.set_index_params(get_index_params())
+				.catch((/** @type any */ e) => log_error('set_index_params failed', e))
 		if (exclude_config_keys.some(f => event.affectsConfiguration(f)) ||
 			event.affectsConfiguration('search.useIgnoreFiles') ||
-			event.affectsConfiguration('search.useGlobalIgnoreFiles'))
+			event.affectsConfiguration('search.useGlobalIgnoreFiles') ||
+			event.affectsConfiguration('search++.useIgnoreFiles') ||
+			event.affectsConfiguration('search++.useGlobalIgnoreFiles'))
 			return scan_debounced()
 	})
 
@@ -402,6 +420,11 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			webview?.webview.postMessage({ type: 'nav', direction: 'next' })),
 		vscode.commands.registerCommand('search++.focusPreviousResult', () =>
 			webview?.webview.postMessage({ type: 'nav', direction: 'prev' })),
+		vscode.commands.registerCommand('search++.rebuildIndex', async () => {
+			await indexer_client.clear_index()
+			vscode.window.showInformationMessage('Search++: rebuilding the index…')
+			scan()
+		}),
 	)
 
 	update_verbose()

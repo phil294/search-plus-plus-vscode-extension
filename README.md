@@ -91,9 +91,46 @@ Special characters other than "normal" letters are skipped, you can only search 
 
 ## Configuration
 
-### X
+You don't need to configure anything — every setting is optional. Search++ contributes the settings below, and additionally honours several native VSCode settings so it behaves like the built-in tools.
 
-TODO
+### Search++ settings
+
+```jsonc
+{
+    // Additional exclude globs for indexing, same { "**/glob": true } format as
+    // files.watcherExclude / search.exclude. Takes precedence over all of them.
+    "search++.watcherExclude": {},
+
+    // Skip full-text indexing of files larger than this many megabytes (they stay
+    // listed in the file picker). Applies to newly added/changed files only; run
+    // "Search++: Rebuild Index" to apply it to the whole workspace.
+    "search++.maxIndexSizeMb": 20,
+
+    // Skip full-text indexing of files whose average line length exceeds this
+    // (minified / generated / data files stay listed name-only). Applies to newly
+    // added/changed files only; run "Search++: Rebuild Index" to apply everywhere.
+    "search++.maxAverageLineLength": 300,
+
+    // Override search.useIgnoreFiles for indexing (null = inherit the native value).
+    // false also full-text indexes gitignored files, e.g. vendored dependencies.
+    "search++.useIgnoreFiles": null,
+
+    // Override search.useGlobalIgnoreFiles for indexing (null = inherit).
+    "search++.useGlobalIgnoreFiles": null,
+
+    // Verbose debug output to the "Search++" output channel. Keep off for normal use.
+    "search++.verboseLogging": false
+}
+```
+
+The ignore/exclude settings apply live — changing one re-indexes affected files with no reload. The two `max…` limits above apply only to files added or changed afterwards; to apply them to the entire existing index, run the **Search++: Rebuild Index** command (Command Palette), which wipes the index and reindexes from scratch. Rebuilding a very large workspace can take a while, so it's mainly meant for troubleshooting.
+
+### Honoured VSCode settings
+
+- `search.exclude`, `files.exclude`, `files.watcherExclude` — files excluded from indexing (see [Behavior](#behavior) for precedence).
+- `search.useIgnoreFiles` — honour `.gitignore` / `.ignore` (unless overridden by `search++.useIgnoreFiles`).
+- `search.useGlobalIgnoreFiles` — honour the global gitignore (unless overridden by `search++.useGlobalIgnoreFiles`).
+- `workbench.quickOpen.preserveInput` — whether the file picker keeps your last query when reopened.
 
 ## Performance
 

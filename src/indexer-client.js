@@ -5,7 +5,7 @@ const { host_write } = require('./log')
 /** Extension-host side proxy around the indexing worker thread. All indexer/queue calls go
  * through here as RPC. Also forwards the worker's log and progress messages to the host. */
 class IndexerClient {
-	constructor(/** @type import('vscode').ExtensionContext */ context, /** @type {{storage_path:string, verbose:boolean, on_progress:(n:number|null)=>any}} */ { storage_path, verbose, on_progress }) {
+	constructor(/** @type import('vscode').ExtensionContext */ context, /** @type {{storage_path:string, verbose:boolean, on_progress:(n:number|null)=>any, index_params?:{max_index_size?:number, max_avg_line_length?:number}}} */ { storage_path, verbose, on_progress, index_params }) {
 		this.on_progress = on_progress
 		this._id = 0
 		/** @type {Map<number,{resolve:(v:any)=>void, reject:(e:any)=>void}>} */
@@ -17,7 +17,7 @@ class IndexerClient {
 		let worker_path = context.asAbsolutePath('src/worker.js')
 		if (! existsSync(worker_path))
 			worker_path = context.asAbsolutePath('worker.js')
-		this.worker = new Worker(worker_path, { workerData: { storage_path, verbose } })
+		this.worker = new Worker(worker_path, { workerData: { storage_path, verbose, index_params } })
 		this.worker.on('message', (msg) => this._on_message(msg))
 		this.worker.on('error', (err) => host_write('error', ['Indexing worker error', String(err?.stack || err)]))
 		this.worker.on('exit', (code) => {
@@ -100,6 +100,15 @@ class IndexerClient {
 
 	set_verbose(/** @type boolean */ v) {
 		return this.call('set_verbose', v)
+	}
+
+	set_index_params(/** @type {{max_index_size?:number, max_avg_line_length?:number}} */ params) {
+		return this.call('set_index_params', params)
+	}
+
+	clear_index() {
+		this._file_paths_cache = null
+		return this.call('clear_index')
 	}
 
 	dispose() {

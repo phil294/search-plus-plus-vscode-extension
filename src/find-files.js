@@ -60,16 +60,24 @@ function app_roots() {
 	return roots
 }
 
-// Extra ripgrep flags for the CONTENT-INDEXED pass, from VS Code's native ignore settings:
-// - search.useIgnoreFiles (default true): honour .gitignore/.ignore. false -> --no-ignore, so
-//   everything (e.g. gitignored vendor/) gets content-indexed, not just listed name-only.
-// - search.useGlobalIgnoreFiles (default false): honour the user's global gitignore. ripgrep honours
-//   it by default, so we add --no-ignore-global unless it's explicitly enabled, matching VS Code.
+// Extra ripgrep flags for the CONTENT-INDEXED pass, from the ignore settings. Search++'s own
+// `search++.useIgnoreFiles` / `search++.useGlobalIgnoreFiles` override the native `search.*` ones when
+// set (null = inherit the native value):
+// - useIgnoreFiles (default true): honour .gitignore/.ignore. false -> --no-ignore, so everything
+//   (e.g. gitignored vendor/) gets content-indexed, not just listed name-only.
+// - useGlobalIgnoreFiles (default false): honour the user's global gitignore. ripgrep honours it by
+//   default, so we add --no-ignore-global unless it's explicitly enabled, matching VS Code.
 function indexed_ignore_args() {
 	let cfg = vscode.workspace.getConfiguration()
-	if (cfg.get('search.useIgnoreFiles') === false)
+	let use_ignore = cfg.get('search++.useIgnoreFiles')
+	if (use_ignore == null)
+		use_ignore = cfg.get('search.useIgnoreFiles')
+	let use_global = cfg.get('search++.useGlobalIgnoreFiles')
+	if (use_global == null)
+		use_global = cfg.get('search.useGlobalIgnoreFiles')
+	if (use_ignore === false)
 		return ['--no-ignore']
-	if (cfg.get('search.useGlobalIgnoreFiles') === true)
+	if (use_global === true)
 		return []
 	return ['--no-ignore-global']
 }

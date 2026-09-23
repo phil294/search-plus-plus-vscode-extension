@@ -146,6 +146,10 @@ function score_target(/** @type string[] */ tokens, /** @type string */ target, 
 	return total
 }
 
+/** Last typed query per mode, used to honour workbench.quickOpen.preserveInput like VS Code's own
+ * pickers. Module-level: the picker is recreated on every invocation. */
+const last_input_by_mode = new Map()
+
 /**
  * A capable "Go to File" style quick picker with three modes, switched by the first typed character:
  * - (default) fuzzy file-name search over every indexed file (incl. binary ones). `:line` suffix supported.
@@ -166,6 +170,10 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		: mode === 'text_in_workspace'
 			? 'Search text across the workspace'
 			: 'Search files by name. Prefix @ = text in current file, # = text in workspace'
+	let preserve_input = !! vscode.workspace.getConfiguration().get('workbench.quickOpen.preserveInput')
+	let input_key = mode || 'file'
+	if (preserve_input)
+		qp.value = last_input_by_mode.get(input_key) || ''
 
 	let preview_editor = vscode.window.activeTextEditor
 	let original_selection = preview_editor?.selection
@@ -395,6 +403,8 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		// restore the editor if the user cancelled after we moved the cursor for preview
 		if (! accepted && preview_editor && original_selection)
 			preview_editor.selection = original_selection
+		if (preserve_input)
+			last_input_by_mode.set(input_key, qp.value)
 		qp.dispose()
 	})
 

@@ -165,6 +165,15 @@ module.exports.Indexer = class {
 		this.db.exec('create index if not exists idx_file_content_word on file_content(word); create index if not exists idx_file_content_word_lower on file_content(word_lower);')
 	}
 
+	/** Folds the WAL back into the main db file. Passive auto-checkpointing alone can lag far behind
+	 * during a large (re)index, leaving index4.db-wal at hundreds of MB until VS Code restarts; call
+	 * this once a batch of writes is done (not per-write, since TRUNCATE blocks concurrent readers). */
+	checkpoint() {
+		let t = Date.now()
+		let result = this.db.get('pragma wal_checkpoint(TRUNCATE)')
+		log_debug(`wal_checkpoint(TRUNCATE) ${Date.now() - t}ms`, result)
+	}
+
 	index_docs(/** @type {IndexDoc[]} */ docs) {
 		let t_start = Date.now()
 		let paths = docs.map(d => d.path)
@@ -379,7 +388,13 @@ module.exports.Indexer = class {
 				if (total_matches >= limit)
 					break
 			} catch (err) {
-				log_error('Error reading file for matches:', file_path, err.message)
+				// The file may have been deleted/renamed/permission-changed since it was indexed
+				// (watcher events are debounced, so the index can briefly lag reality); this is
+				// routine, not exceptional, so it must not spam the error log.
+				if (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM')
+					log_debug('skipping unreadable file for matches:', file_path, err.code)
+				else
+					log_error('Error reading file for matches:', file_path, err.message)
 			}
 
 		log_debug(`find matches with lines time: ${(Date.now() - start) / 1000} seconds, ${results.length} files with matches, ${total_matches} total matches`)

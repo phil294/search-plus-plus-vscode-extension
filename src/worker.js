@@ -69,6 +69,7 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 			indexer.create_word_indexes()
 			log_info(`create_word_indexes ${((Date.now() - t) / 1000).toFixed(1)}s`)
 		}
+		indexer.checkpoint()
 	}
 }
 
@@ -77,6 +78,7 @@ async function index_files(/** @type {import('./indexer').FileMeta[]} */ metas) 
 	for (let meta of metas)
 		queue.add(meta)
 	await drain()
+	indexer.checkpoint()
 }
 
 async function delete_paths(/** @type {string[]} */ paths) {

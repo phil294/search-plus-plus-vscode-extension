@@ -58,8 +58,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		indexer_client.set_verbose(verbose).catch((/** @type any */ e) => log_error('set_verbose failed', e))
 	}
 
-	// order matters: right overwrites left
-	const exclude_config_keys = ['files.exclude', 'search.exclude', 'files.watcherExclude', 'search++.watcherExclude']
+	// order matters: right overwrites left. search.exclude wins over files.watcherExclude so a file
+	// explicitly un-excluded there (e.g. `**/vendor/**: false`) is still indexed even if the watcher
+	// ignores it; search++.watcherExclude stays the final override.
+	const exclude_config_keys = ['files.watcherExclude', 'files.exclude', 'search.exclude', 'search++.watcherExclude']
 
 	/** gitignored patterns are not part of this */
 	let get_exclude_patterns = () => {
@@ -220,7 +222,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	vscode.workspace.onDidChangeConfiguration((event) => {
 		if (event.affectsConfiguration('search++.verboseLogging'))
 			update_verbose()
-		if (exclude_config_keys.some(f => event.affectsConfiguration(f)))
+		if (exclude_config_keys.some(f => event.affectsConfiguration(f)) ||
+			event.affectsConfiguration('search.useIgnoreFiles') ||
+			event.affectsConfiguration('search.useGlobalIgnoreFiles'))
 			return scan_debounced()
 	})
 

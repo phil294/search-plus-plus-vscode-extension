@@ -74,6 +74,7 @@ class Db {
  * @property {string} path
  * @property {string|null} text `null` means the file is recorded but its contents are not indexed (binary/oversized).
  * @property {number} mtime
+ * @property {boolean} [content_indexed] whether this file's contents were meant to be full-text indexed. Persisted so a settings change (e.g. `search.useIgnoreFiles`) that flips it re-indexes the file even when its mtime is unchanged.
  */
 
 /**
@@ -94,7 +95,7 @@ module.exports.Indexer = class {
 			mkdirSync(index_path, { recursive: true })
 		log_debug('search index: ' + index_path)
 
-		let db_path = path.join(index_path, 'index4.db') // version bump after scheme change
+		let db_path = path.join(index_path, 'index5.db') // version bump after scheme change
 		this.db = new Db(db_path)
 
 		try {
@@ -146,7 +147,7 @@ module.exports.Indexer = class {
 			pragma cache_size = -131072;
 			pragma mmap_size = 536870912;
 			${this.extra_pragmas}
-			create table if not exists file(id integer primary key autoincrement, path text unique, mtime number);
+			create table if not exists file(id integer primary key autoincrement, path text unique, mtime number, content_indexed integer);
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
 			create index if not exists idx_file_content_word on file_content(word);
 			create index if not exists idx_file_content_word_lower on file_content(word_lower);
@@ -166,7 +167,7 @@ module.exports.Indexer = class {
 	}
 
 	/** Folds the WAL back into the main db file. Passive auto-checkpointing alone can lag far behind
-	 * during a large (re)index, leaving index4.db-wal at hundreds of MB until VS Code restarts; call
+	 * during a large (re)index, leaving index5.db-wal at hundreds of MB until VS Code restarts; call
 	 * this once a batch of writes is done (not per-write, since TRUNCATE blocks concurrent readers). */
 	checkpoint() {
 		let t = Date.now()
@@ -180,10 +181,10 @@ module.exports.Indexer = class {
 		this.db.exec('begin transaction')
 		// all at the same time is about 40% faster than docs.length individual `.run()`s, that's why all these weird prp stmts are built up like this
 		let single_qmarks_paths = new Array(docs.length).fill('?').join(',')
-		let double_qmarks_paths = new Array(docs.length).fill('(?,?)').join(',')
+		let file_row_placeholders = new Array(docs.length).fill('(?,?,?)').join(',')
 		this.delete_doc_by_path(...paths)
 		let t_delete = Date.now()
-		this.db.run(`insert into file (path, mtime) values ${double_qmarks_paths}`, docs.map(d => [d.path, d.mtime]).flat())
+		this.db.run(`insert into file (path, mtime, content_indexed) values ${file_row_placeholders}`, docs.map(d => [d.path, d.mtime, d.content_indexed ? 1 : 0]).flat())
 		let new_ids = this.db.all(`select id, path from file where path in (${single_qmarks_paths})`, paths)
 		let new_id_by_path = new_ids.reduce((/** @type {Record<string, number>} */ all, { id, path }) => { all[String(path)] = Number(id); return all }, {})
 		let t_file = Date.now()
@@ -267,9 +268,11 @@ module.exports.Indexer = class {
 	/** not returning text contents here */
 	// TODO: rename to path_meta everywhere
 	all_meta_docs() {
-		let rows = this.db.all('select path, mtime from file')
-		for (let row of rows)
+		let rows = this.db.all('select path, mtime, content_indexed from file')
+		for (let row of rows) {
 			row.mtime = Number(row.mtime)
+			row.content_indexed = !! row.content_indexed
+		}
 		// TODO: indexdoc has a .text prop ...?
 		return /** @type {IndexDoc[]} */ (rows) // eslint-disable-line no-extra-parens
 	}

@@ -128,7 +128,7 @@ class IndexQueue extends Map {
 				// and they aren't rescanned each time), but their contents are not indexed: text stays null
 				// and no read happens.
 				if (file_meta.index_content === false || file_meta.size === 0 || file_meta.size > this.max_index_size || content_excluded_name_re.test(file_meta.path) || await isBinary(file_meta.path, undefined)) {
-					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null })
+					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null, content_indexed: file_meta.index_content !== false })
 					return
 				}
 				let file_buf
@@ -147,16 +147,16 @@ class IndexQueue extends Map {
 				if (await isBinary(null, file_buf)) { // check buffer contents
 					log_debug('skipping: is binary (buf)')
 					// still recorded, but contents not indexed
-					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null })
+					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null, content_indexed: true })
 					return
 				}
 				if (avg_non_empty_line_length(file_buf) > this.max_avg_line_length) {
 					log_debug('skipping content: huge average line length (minified/data)')
 					// still recorded, but contents not indexed
-					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null })
+					docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: null, content_indexed: true })
 					return
 				}
-				docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString() })
+				docs_batch.push({ path: file_meta.path, mtime: file_meta.mtime, text: file_buf.toString(), content_indexed: true })
 				docs_batch_bytes_read += file_buf.length
 			}))
 			if (docs_batch_bytes_read > docs_batch_bytes_threshold || docs_batch.length >= max_docs_per_batch)

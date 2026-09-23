@@ -60,6 +60,20 @@ function app_roots() {
 	return roots
 }
 
+// Extra ripgrep flags for the CONTENT-INDEXED pass, from VS Code's native ignore settings:
+// - search.useIgnoreFiles (default true): honour .gitignore/.ignore. false -> --no-ignore, so
+//   everything (e.g. gitignored vendor/) gets content-indexed, not just listed name-only.
+// - search.useGlobalIgnoreFiles (default false): honour the user's global gitignore. ripgrep honours
+//   it by default, so we add --no-ignore-global unless it's explicitly enabled, matching VS Code.
+function indexed_ignore_args() {
+	let cfg = vscode.workspace.getConfiguration()
+	if (cfg.get('search.useIgnoreFiles') === false)
+		return ['--no-ignore']
+	if (cfg.get('search.useGlobalIgnoreFiles') === true)
+		return []
+	return ['--no-ignore-global']
+}
+
 /** Lists workspace files using ripgrep, which natively honours .gitignore/.ignore/.rgignore as
  * well as the extra `excludes` globs (files.exclude, search.exclude, etc.). Much faster and simpler
  * than the old findFiles2 + manual gitignore path. https://github.com/microsoft/vscode/issues/48674
@@ -81,7 +95,7 @@ module.exports.find_files = async (/** @type {{excludes:string[]}} */ { excludes
 module.exports.find_indexed_paths = async (/** @type {{excludes:string[]}} */ { excludes }) => {
 	let folders = vscode.workspace.workspaceFolders || []
 	let per = await Promise.all(folders.map(async folder => {
-		let rels = await rg_list(folder, excludes, [])
+		let rels = await rg_list(folder, excludes, indexed_ignore_args())
 		return rels.map(rel => vscode.Uri.joinPath(folder.uri, rel).path)
 	}))
 	return new Set(per.flat())
@@ -93,7 +107,7 @@ async function list_folder_files(/** @type import('vscode').WorkspaceFolder */ f
 	// and the `excludes` globs, so node_modules etc. stay out); those extras are shown in the file
 	// picker but recorded name-only, never content-indexed.
 	let [indexed_rels, all_rels] = await Promise.all([
-		rg_list(folder, excludes, []),
+		rg_list(folder, excludes, indexed_ignore_args()),
 		rg_list(folder, excludes, ['--no-ignore-vcs']),
 	])
 	let indexed = new Set(indexed_rels)

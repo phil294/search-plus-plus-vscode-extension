@@ -36,13 +36,19 @@ async function drain() {
 /** Full scan reconciliation: (re)index changed files, drop files that no longer exist. */
 async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 	let old_meta_docs = indexer.all_meta_docs()
-	/** @type {Record<string,number>} */
-	let old_mtime_by_path = {}
+	/** @type {Record<string,import('./indexer').IndexDoc>} */
+	let old_by_path = {}
 	for (let doc of old_meta_docs)
-		old_mtime_by_path[doc.path] = doc.mtime
-	for (let meta of metas)
-		if (old_mtime_by_path[meta.path] !== meta.mtime)
+		old_by_path[doc.path] = doc
+	// Re-index a file when its mtime changed OR when its content-indexed intent flipped (e.g. the user
+	// toggled search.useIgnoreFiles / an exclude, so a name-only file should now be full-text indexed or
+	// vice versa) — the mtime alone would miss that.
+	for (let meta of metas) {
+		let old = old_by_path[meta.path]
+		let want_content = meta.index_content !== false
+		if (! old || old.mtime !== meta.mtime || !! old.content_indexed !== want_content)
 			queue.add(meta)
+	}
 	let new_paths = new Set(metas.map(m => m.path))
 	let gone = old_meta_docs.filter(doc => ! new_paths.has(doc.path)).map(doc => doc.path)
 	if (gone.length) {

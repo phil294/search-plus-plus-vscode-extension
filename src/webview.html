@@ -453,6 +453,31 @@
 						workspace_folders.value = message.workspace_folders || []
 						selected.value = -1
 						nextTick().then(highlight_search_terms)
+					} else if (message.type === 'results_live') {
+						// In-place update after the index changed: drop files that no longer match and
+						// refresh the matches of already-shown files (never add new file entries), keeping
+						// collapse state, scroll position and the current selection.
+						const new_by_path = new Map((message.results || []).map(r => [r.path, r]))
+						const sel_row = flat_rows.value[selected.value]
+						const sel_id = ! sel_row ? null
+							: sel_row.kind === 'file'
+								? { path: results.value[sel_row.fi].path, line: null }
+								: { path: results.value[sel_row.fi].path, line: results.value[sel_row.fi].matches[sel_row.mi]?.line_number }
+						const container = results_container.value
+						const prev_scroll = container ? container.scrollTop : 0
+						results.value = results.value
+							.filter(f => new_by_path.has(f.path))
+							.map(f => ({ ...new_by_path.get(f.path), collapsed: f.collapsed }))
+						has_more.value = message.has_more
+						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
+						selected.value = ! sel_id ? -1 : flat_rows.value.findIndex(r =>
+							sel_id.line == null
+								? r.kind === 'file' && results.value[r.fi].path === sel_id.path
+								: r.kind === 'match' && results.value[r.fi].path === sel_id.path && results.value[r.fi].matches[r.mi]?.line_number === sel_id.line)
+						nextTick().then(() => {
+							if (container) container.scrollTop = prev_scroll
+							highlight_search_terms()
+						})
 					} else if (message.type === 'nav') {
 						nav(message.direction)
 					} else if (message.type === 'focus_search') {

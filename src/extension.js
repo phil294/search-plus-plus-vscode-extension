@@ -184,7 +184,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			uri_to_file_meta(u, ! name_only_paths.has(u.path)).catch(() => null)))) // file may vanish between event and stat
 			.filter((/** @type {FileMeta?} */ m) => !! m)
 		if (metas.length)
-			indexer_client.index_files(/** @type {FileMeta[]} */ (metas)).catch((/** @type any */ e) => log_error('index_files failed', e)) // eslint-disable-line no-extra-parens
+			indexer_client.index_files(/** @type {FileMeta[]} */ (metas)) // eslint-disable-line no-extra-parens
+				.then(() => rerun_search_live())
+				.catch((/** @type any */ e) => log_error('index_files failed', e))
 	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		watcher_events++
@@ -210,6 +212,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		indexed_paths.delete(uri.path)
 		name_only_paths.delete(uri.path)
 		await indexer_client.delete_paths([uri.path])
+		rerun_search_live()
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			scan_debounced()
 	})
@@ -223,6 +226,32 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 	/** @type {vscode.WebviewView | null} */
 	let webview = null
+	/** @type {{query:string, include?:string, exclude?:string}|null} */
+	let last_search = null
+	// Runs the current search and posts the outcome. `type` is 'results' for a fresh search (webview
+	// replaces its list) or 'results_live' for an in-place update after the index changed.
+	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
+		let folders = vscode.workspace.workspaceFolders || []
+		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
+		let filter = {
+			include: parse_patterns(params.include),
+			exclude: parse_patterns(params.exclude),
+			roots: folders.map(f => f.uri.path),
+		}
+		let found = await indexer_client.find_paths_with_lines_by_word(params.query, true, 1000, filter) // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
+		webview?.webview.postMessage({
+			type,
+			...found,
+			results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+			workspace_folders,
+		})
+	}
+	// After the index changes, refresh the visible results in place (only when the panel is visible and
+	// there is an active query) so stale matches disappear without the user re-searching.
+	let rerun_search_live = () => {
+		if (webview?.visible && last_search?.query?.trim())
+			run_search(last_search, 'results_live').catch((/** @type any */ e) => log_error('live re-search failed', e))
+	}
 	context.subscriptions.push(vscode.window.registerWebviewViewProvider(EXT_ID, {
 		resolveWebviewView(/** @type {vscode.WebviewView} */ webview_view) {
 			webview = webview_view
@@ -238,25 +267,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 			webview_view.webview.onDidReceiveMessage(async (message) => {
 				if (message.type === 'search') {
+					last_search = { query: message.query, include: message.include, exclude: message.exclude }
 					if (! message.query?.trim())
 						return webview?.webview.postMessage({ type: 'results', results: [], workspace_folders: [] })
-					let folders = vscode.workspace.workspaceFolders || []
-					let workspace_folders = folders.map(folder => ({
-						name: folder.name,
-						path: folder.uri.path,
-					}))
-					let filter = {
-						include: parse_patterns(message.include),
-						exclude: parse_patterns(message.exclude),
-						roots: folders.map(f => f.uri.path),
-					}
-					let found = await indexer_client.find_paths_with_lines_by_word(message.query, true, 1000, filter) // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
-					webview?.webview.postMessage({
-						type: 'results',
-						...found,
-						results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
-						workspace_folders,
-					})
+					await run_search(last_search, 'results')
 				} else if (message.type === 'has_results')
 					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)
 				else if (message.type === 'open_file') {

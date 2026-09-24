@@ -23,9 +23,24 @@ let basename = (/** @type string */ p) => {
 	return i === -1 ? p : p.slice(i + 1)
 }
 
-let dir_of = (/** @type string */ rel) => {
+/** Directory label for the picker: the workspace-folder name plus the in-folder directory, e.g.
+ * `docker • gn_dev` for ~/docker/gn_dev/.env. Mirrors the search view's get_dir_path. */
+function describe_dir(/** @type string */ p, /** @type {{name:string, path:string}[]} */ folders) {
+	let folder = null
+	let longest = -1
+	for (let f of folders)
+		if ((p === f.path || p.startsWith(f.path + '/')) && f.path.length > longest) {
+			folder = f
+			longest = f.path.length
+		}
+	if (! folder) {
+		let i = p.lastIndexOf('/')
+		return i === -1 ? '' : p.slice(0, i)
+	}
+	let rel = p.slice(folder.path.length + 1)
 	let i = rel.lastIndexOf('/')
-	return i === -1 ? '' : rel.slice(0, i)
+	let dir = i === -1 ? '' : rel.slice(0, i)
+	return dir ? `${folder.name} • ${dir}` : folder.name
 }
 
 // Ranking tuning for the file picker (see score_target / update_files below):
@@ -179,6 +194,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	if (extension_uri)
 		ensure_icons(extension_uri)
 	let roots = workspace_roots()
+	let folder_list = (vscode.workspace.workspaceFolders || []).map(f => ({ name: f.name, path: f.uri.path }))
 	let qp = vscode.window.createQuickPick()
 	qp.matchOnDescription = false
 	qp.matchOnDetail = false
@@ -232,9 +248,9 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		let render = (/** @type {{p:string, base:string, rel:string}[]} */ rows) => {
 			if (my_token !== file_token)
 				return
-			qp.items = rows.slice(0, 500).map(({ p, base, rel }) => ({
+			qp.items = rows.slice(0, 500).map(({ p, base }) => ({
 				label: base,
-				description: dir_of(rel),
+				description: describe_dir(p, folder_list),
 				iconPath: file_icon(p),
 				alwaysShow: true,
 				_action: { type: 'open', path: p, line: line_no },
@@ -275,16 +291,26 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		// (e.g. `lang po .po` fuzzy-hitting `service.…testFailedDueActiveBookings.fail.html`) would
 		// outrank genuine `lang/po/*.po` path matches.
 		let min_base_score = 0.5 * tokens.reduce((s, t) => s + (6 * t.length - 1), 0)
+		let query_len = tokens.reduce((s, t) => s + t.length, 0)
 		for (let { path: p, mtime } of candidates) {
 			let rel = relativize(p, roots)
 			let base = basename(p)
 			let base_score = score_target(tokens, base, base.toLowerCase())
 			// filename matches rank above path-only matches; both fall back to the full relative path
-			let score = base_score !== null && base_score >= min_base_score
-				? base_score + 1000
-				: score_target(tokens, rel, rel.toLowerCase())
-			if (score !== null)
-				scored.push({ p, rel, base, score: score + mtime_bonus(mtime), recency: recency ? recency.get(p) : 0 })
+			let is_base_match = base_score !== null && base_score >= min_base_score
+			let score = is_base_match ? /** @type {number} */ (base_score) + 1000 : score_target(tokens, rel, rel.toLowerCase()) // eslint-disable-line no-extra-parens
+			if (score !== null) {
+				// Reward matching a larger fraction of the basename so a full/near-full name match (`.env`
+				// for ".env", `note` for "notes") outranks a longer submatch (`.env.production`, `NOTES.txt`)
+				// even when the latter was modified more recently (coverage weight > mtime_bonus_max). A
+				// short trailing file extension (<=4 chars) is excluded from the denominator so `NOTES.txt`
+				// isn't penalised for `.txt`, while a long dotted suffix like `.production` still counts.
+				let dot = base.lastIndexOf('.')
+				let ext_len = base.length - dot - 1
+				let cov_len = dot > 0 && ext_len >= 1 && ext_len <= 4 ? dot : base.length
+				let coverage = is_base_match ? query_len / Math.max(1, cov_len) : 0
+				scored.push({ p, rel, base, score: score + coverage * 1000 + mtime_bonus(mtime), recency: recency ? recency.get(p) : 0 })
+			}
 		}
 		scored.sort((a, b) => b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
 		render(scored)

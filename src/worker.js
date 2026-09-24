@@ -36,6 +36,7 @@ async function drain() {
 
 /** Full scan reconciliation: (re)index changed files, drop files that no longer exist. */
 async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
+	let t_sync = Date.now()
 	let old_meta_docs = indexer.all_meta_docs()
 	/** @type {Record<string,import('./indexer').IndexDoc>} */
 	let old_by_path = {}
@@ -60,6 +61,7 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 	// than maintaining them across millions of per-row inserts. Recreate is crash-safe (init_db uses
 	// `if not exists`). Skipped for small syncs where the rebuild cost would outweigh the saving.
 	let bulk = queue.size > 5000
+	let to_index = queue.size
 	log_info(`sync: ${queue.size} file(s) to (re)index, ${gone.length} gone${bulk ? ', deferred word-index build' : ''}`)
 	if (bulk) {
 		let t = Date.now()
@@ -78,6 +80,7 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 		}
 		indexer.checkpoint()
 	}
+	log_info(`synced ${to_index} file(s) (${gone.length} removed) in ${((Date.now() - t_sync) / 1000).toFixed(1)}s`)
 }
 
 /** Index a specific set of files (e.g. from file-watcher change events). */

@@ -42,31 +42,50 @@ All searches are performed case insensitive, results are case preserving.
 
 ## Full takeover from the built-in search
 
-Search++ ships commands but deliberately does *not* rebind VSCode's built-in shortcuts, so it stays unobtrusive by default. If you want Search++ to fully replace the (slow, on very large repos) built-in Search, Go to File and Go to Symbol, add the snippet below to your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*).
+By default, Search++ **rebinds VSCode's built-in shortcuts** so that installing it is a one-click, out-of-the-box full replacement for the (slow, on very large repos) built-in Search, Go to File and Go to Symbol:
 
-The `-` prefixed entries unbind the built-in commands; the others map the same keys to Search++.
+| Shortcut (macOS) | Command |
+| --- | --- |
+| `Ctrl+Shift+F` (`Cmd+Shift+F`) | Search++: Focus Search |
+| `Ctrl+P` (`Cmd+P`) | Search++: Go to File |
+| `Ctrl+Shift+O` (`Cmd+Shift+O`) | Search++: Go to Text in Current File |
+| `Ctrl+T` (`Cmd+T`) | Search++: Go to Text in Workspace |
+| `F4` / `Shift+F4` | Focus next / previous search result |
+
+It is recommended to also move the Search++ side bar view to a convenient spot (e.g. drag it into the primary side bar next to the built-in Search icon, or set it as the default) so the full takeover feels seamless.
+
+### If a shortcut doesn't take effect
+
+The bindings above are *default* keybindings contributed by the extension. VSCode always lets your **personal** `keybindings.json` win over an extension's defaults, so if you (or another extension) already bind one of these keys, that binding takes precedence and Search++ never sees the key. This is why, for example, a personal `Ctrl+P → workbench.action.quickOpen` entry keeps opening the built-in file picker.
+
+To check for a conflict, open *Preferences: Open Keyboard Shortcuts* and search for the key (e.g. `ctrl+p`); a key bound more than once shows a warning icon. To force the full takeover regardless of any existing bindings, paste this into your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*) — because it lives in your user file, it beats every default:
 
 ```json
 [
-    { "key": "ctrl+shift+f", "command": "-workbench.action.findInFiles" },
     { "key": "ctrl+shift+f", "command": "search++.search" },
-
-    { "key": "ctrl+p", "command": "-workbench.action.quickOpen" },
     { "key": "ctrl+p", "command": "search++.filePicker" },
-
-    { "key": "ctrl+shift+o", "command": "-workbench.action.gotoSymbol" },
     { "key": "ctrl+shift+o", "command": "search++.goToTextInFile" },
-
-    { "key": "ctrl+t", "command": "-workbench.action.showAllSymbols" },
     { "key": "ctrl+t", "command": "search++.goToTextInWorkspace" }
 ]
 ```
 
-On macOS, replace `ctrl` with `cmd`.
+On macOS use `cmd+` instead of `ctrl+`. Remove any of your own conflicting entries for these keys (or keep only the lines you want).
+
+### Disabling the shortcuts
+
+If you'd rather keep VSCode's built-in commands on some or all of these keys, add unbind entries to your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*). For example, to give `Ctrl+P` back to the built-in Go to File:
+
+```json
+[
+    { "key": "ctrl+p", "command": "-search++.filePicker" }
+]
+```
+
+Remove the corresponding `-workbench.action.*` unbind that Search++ contributes the same way if you also want the native command back on that key. You can inspect and edit every binding under *Preferences: Open Keyboard Shortcuts* by searching for `search++`.
 
 The file picker understands the same prefixes as the built-in one, so a single binding is enough if you prefer: type nothing to search files by name (append `:123` to jump to a line), prefix `@` to search text in the current file, or `#` to search text across the whole workspace.
 
-Within the Search++ view, results are navigable entirely from the keyboard, just like the built-in Search view: `ArrowUp`/`ArrowDown` move through files and matches, `ArrowLeft`/`ArrowRight` collapse/expand a file, `Enter` opens the selected match, and `Escape` returns to the search box. `F4` / `Shift+F4` jump to the next / previous match (these two are bound automatically).
+Within the Search++ view, results are navigable entirely from the keyboard, just like the built-in Search view: `ArrowUp`/`ArrowDown` move through files and matches, `ArrowLeft`/`ArrowRight` collapse/expand a file, `Enter` opens the selected match, and `Escape` returns to the search box. Pressing `Enter` in the search box re-runs the search to refresh stale results. `F4` / `Shift+F4` jump to the next / previous match and wrap around at the ends.
 
 ## Large workspaces
 

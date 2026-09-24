@@ -349,12 +349,21 @@ module.exports.Indexer = class {
 	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
 		let start = Date.now()
-		// TODO: escape, also below
+		/** @type {string[]} */
 		let paths
 		let words = [word]
 		if (is_partial_trigram_query) {
-			paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? order by rank limit ?', [word, limit])
-				.map(r => String(r.path))
+			// FTS5 has its own query syntax (`-` = NOT, `:` = column filter, `.`/`"` special), so a raw
+			// query like `focus-visible` or `a.b` is a syntax error. Quote each whitespace token as a
+			// string literal (doubling internal quotes) -> AND of substring phrases under the trigram tokenizer.
+			let fts_query = word.trim().split(/\s+/).filter(Boolean)
+				.map(t => '"' + t.replace(/"/g, '""') + '"').join(' ')
+			if (! fts_query)
+				paths = []
+			else
+				paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? order by rank limit ?', [fts_query, limit])
+					.map(r => String(r.path))
+			log_debug(`fts match time: ${Date.now() - start}ms, ${paths.length} candidate file(s)`)
 			// TODO: ?? regex
 			words = word.split(/\s+/).map(w => w.toLowerCase())
 		} else
@@ -364,6 +373,7 @@ module.exports.Indexer = class {
 
 		let words_lower = words.map(w => w.toLowerCase())
 
+		let t_scan = Date.now()
 		let results = []
 		let total_matches = 0
 
@@ -371,19 +381,22 @@ module.exports.Indexer = class {
 			try {
 				let content = readFileSync(file_path, 'utf-8')
 				let lines = content.split('\n')
+				// Lowercase the whole file once instead of per line: one native pass beats thousands of
+				// tiny toLowerCase() calls/allocations on multi-thousand-line files.
+				let lower_lines = content.toLowerCase().split('\n')
 				let matches = []
+				let single_word = words_lower.length === 1 ? /** @type {string} */ (words_lower[0]) : null // eslint-disable-line no-extra-parens
 
-				for (let i = 0; i < lines.length; i++) {
-					let line = lines[i]
-					if (! line)
+				for (let i = 0; i < lower_lines.length; i++) {
+					let line_lower = lower_lines[i]
+					if (! line_lower)
 						continue
-					let line_lower = line.toLowerCase()
 
-					// Check if all words are in this line
-					if (words_lower.every(word => line_lower.includes(word))) {
+					// Check if all words are in this line (fast path for the common single-token query)
+					if (single_word !== null ? line_lower.includes(single_word) : words_lower.every(word => line_lower.includes(word))) {
 						matches.push({
 							line_number: i + 1,
-							line_text: line_preview(line, words_lower),
+							line_text: line_preview(lines[i] || '', words_lower),
 						})
 						total_matches++
 						if (total_matches >= limit)
@@ -408,7 +421,7 @@ module.exports.Indexer = class {
 					log_error('Error reading file for matches:', file_path, err.message)
 			}
 
-		log_debug(`find matches with lines time: ${(Date.now() - start) / 1000} seconds, ${results.length} files with matches, ${total_matches} total matches`)
+		log_debug(`find matches with lines time: ${(Date.now() - start) / 1000} seconds (scan ${Date.now() - t_scan}ms), ${results.length} files with matches, ${total_matches} total matches`)
 		return { results, has_more: total_matches >= limit }
 	}
 }

@@ -1,6 +1,6 @@
 const { Worker } = require('worker_threads')
 const { existsSync } = require('fs')
-const { host_write } = require('./log')
+const { host_write, log_debug } = require('./log')
 
 /** Extension-host side proxy around the indexing worker thread. All indexer/queue calls go
  * through here as RPC. Also forwards the worker's log and progress messages to the host. */
@@ -46,8 +46,12 @@ class IndexerClient {
 
 	call(/** @type string */ method, /** @type any[] */ ...args) {
 		let id = ++this._id
+		let start = Date.now()
 		return new Promise((resolve, reject) => {
-			this._pending.set(id, { resolve, reject })
+			this._pending.set(id, {
+				resolve: (/** @type any */ v) => { log_debug(`rpc ${method} took ${Date.now() - start}ms`); resolve(v) },
+				reject: (/** @type any */ e) => { log_debug(`rpc ${method} failed after ${Date.now() - start}ms`); reject(e) },
+			})
 			this.worker.postMessage({ type: 'rpc', id, method, args })
 		})
 	}

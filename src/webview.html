@@ -21,6 +21,9 @@
 			color: var(--vscode-editor-findMatchHighlightForeground, inherit);
 		}
 
+		html, body {
+			height: 100%;
+		}
 		body {
 			padding: 0;
 			margin: 0;
@@ -29,12 +32,18 @@
 			/* TODO: font-size: var(--vscode-font-size); */
 			font-size: 10.5px;
 		}
+		#app {
+			display: flex;
+			flex-direction: column;
+			height: 100vh;
+		}
 		input {
 			/* TODO: */
 			font-family: 'Liberation Mono' !important;
     		font-size: 10px !important;
 		}
 		.search-container {
+			flex: none;
 			padding: 8px;
 			display: flex;
 			flex-direction: column;
@@ -91,11 +100,15 @@
 		.results-container {
 			padding: 0;
 			margin: 0;
+			flex: 1 1 auto;
+			overflow-y: auto;
+			min-height: 0;
 		}
 		.no-results {
 			padding: 8px;
 		}
 		.result-count {
+			flex: none;
 			padding: 4px 8px;
 			color: var(--vscode-descriptionForeground);
 			/* font-size: 12px; */
@@ -113,9 +126,28 @@
 			background: var(--vscode-list-hoverBackground);
 		}
 		.file-header.selected,
+		.dir-header.selected,
 		.match-line.selected {
 			background: var(--vscode-list-activeSelectionBackground);
 			color: var(--vscode-list-activeSelectionForeground);
+		}
+		.dir-header {
+			display: flex;
+			align-items: center;
+			padding: 1px 8px 1px 4px;
+			min-height: 22px;
+			box-sizing: border-box;
+			cursor: pointer;
+			user-select: none;
+		}
+		.dir-header:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+		.dir-name {
+			color: var(--vscode-descriptionForeground);
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
 		}
 		.icon-arrow {
 			margin-right: 2px;
@@ -177,6 +209,11 @@
 			text-overflow: ellipsis;
 			white-space: nowrap;
 		}
+		.filters .input-row .filter-input {
+			flex: 1 1 auto;
+			min-width: 0;
+			width: auto !important;
+		}
 	</style>
 </head>
 <body>
@@ -190,7 +227,12 @@
 			</div>
 			<div v-if="show_filters" class="filters">
 				<div class="filter-label">files to include</div>
-				<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_search_input" placeholder="e.g. *.js, src/" autocomplete="off" />
+				<div class="input-row">
+					<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_search_input" placeholder="e.g. *.js, src/" autocomplete="off" />
+					<button class="toggle-filters" :class="{ active: view_mode === 'tree' }" @click="toggle_view_mode" :title="view_mode === 'tree' ? 'View as List' : 'View as Tree'">
+						<i class="codicon" :class="view_mode === 'tree' ? 'codicon-list-tree' : 'codicon-list-flat'"></i>
+					</button>
+				</div>
 				<div class="filter-label">files to exclude</div>
 				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_search_input" placeholder="e.g. *.test.js, dist/" autocomplete="off" />
 			</div>
@@ -200,21 +242,23 @@
 			<div v-if="! results.length && search_query.trim()" class="no-results">
 				No results found.
 			</div>
-			<div v-for="(item, fi) in results" :key="item.path" class="file-group">
-				<div class="file-header" :class="{ selected: is_file_selected(fi) }" @click="toggle_file(fi)">
-					<i class="codicon icon-arrow" :class="item.collapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
-					<img class="file-icon" :src="'img/file-icons/' + (item.icon || 'default_file.svg')">
-					<span class="file-name">{{ get_file_name(item.path) }}</span>
-					<span class="file-path">{{ get_dir_path(item.path) }}</span>
-					<span class="badge">{{ item.matches.length }}</span>
+			<template v-for="(row, ri) in flat_rows" :key="row_key(row)">
+				<div v-if="row.kind === 'dir'" class="dir-header" :class="{ selected: selected === ri }" :style="{ paddingLeft: (row.depth * 12 + 4) + 'px' }" @click="toggle_dir(row.key)">
+					<i class="codicon icon-arrow" :class="dir_collapsed[row.key] ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
+					<span class="dir-name">{{ row.label }}</span>
 				</div>
-				<div v-if="! item.collapsed" class="file-matches">
-					<div v-for="(match, mi) in item.matches" :key="match.line_number + '-' + mi" class="match-line" :class="{ selected: is_match_selected(fi, mi) }" @click="open_match(fi, mi)">
-						<span class="line-number">{{ match.line_number }}</span>
-						<span class="line-text" :title="match.line_text">{{ match.line_text.trim() }}</span>
-					</div>
+				<div v-else-if="row.kind === 'file'" class="file-header" :class="{ selected: selected === ri }" :style="{ paddingLeft: (row.depth * 12 + 4) + 'px' }" @click="toggle_file(row.fi)">
+					<i class="codicon icon-arrow" :class="results[row.fi].collapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
+					<img class="file-icon" :src="'img/file-icons/' + (results[row.fi].icon || 'default_file.svg')">
+					<span class="file-name">{{ get_file_name(results[row.fi].path) }}</span>
+					<span v-if="view_mode === 'list'" class="file-path">{{ get_dir_path(results[row.fi].path) }}</span>
+					<span class="badge">{{ results[row.fi].matches.length }}</span>
 				</div>
-			</div>
+				<div v-else class="match-line" :class="{ selected: selected === ri }" :style="{ paddingLeft: (row.depth * 12 + 20) + 'px' }" @click="open_match(row.fi, row.mi)">
+					<span class="line-number">{{ results[row.fi].matches[row.mi].line_number }}</span>
+					<span class="line-text" :title="results[row.fi].matches[row.mi].line_text">{{ results[row.fi].matches[row.mi].line_text.trim() }}</span>
+				</div>
+			</template>
 		</div>
 	</div>
 
@@ -243,17 +287,101 @@
 						(has_more.value ? ' (truncated, please refine your search)' : '')
 				})
 
-				// A flat, ordered list of the currently-visible navigable rows (file headers and,
-				// for expanded files, their match lines). Used for keyboard navigation.
+				const dir_collapsed = ref({})
+				const toggle_dir = (key) => { dir_collapsed.value[key] = ! dir_collapsed.value[key] }
+				const view_mode = ref(localStorage.getItem('search_view_mode') || 'tree')
+				const toggle_view_mode = () => {
+					view_mode.value = view_mode.value === 'tree' ? 'list' : 'tree'
+					localStorage.setItem('search_view_mode', view_mode.value)
+				}
+
+				// Directory segments for a path: the workspace-folder name first, then each dir, excluding
+				// the file's own name. Falls back to raw path segments for files outside any folder.
+				const path_segments = (path) => {
+					let folder = null
+					let longest = -1
+					for (const f of workspace_folders.value)
+						if ((path === f.path || path.startsWith(f.path + '/')) && f.path.length > longest) {
+							folder = f
+							longest = f.path.length
+						}
+					if (folder) {
+						const rel = path.slice(folder.path.length + 1).split('/')
+						rel.pop()
+						return [folder.name, ...rel]
+					}
+					const parts = path.split('/')
+					parts.pop()
+					return parts.filter(Boolean)
+				}
+
+				// Group the flat result files into a directory tree, collapsing single-child dir chains
+				// (logic adapted from GitLG's files_tree). Each leaf dir node carries its files; `key` is
+				// the full path from the root (stable, used for collapse state), `label` the display text.
+				const tree = computed(() => {
+					const root = { dirs: {}, files: [], key: '', label: '' }
+					results.value.forEach((file, fi) => {
+						let curr = root
+						let acc = ''
+						for (const seg of path_segments(file.path)) {
+							acc = acc ? acc + '/' + seg : seg
+							curr = curr.dirs[seg] ||= { dirs: {}, files: [], key: acc, label: seg }
+						}
+						curr.files.push({ fi })
+					})
+					const unify = (node) => {
+						let modified = true
+						while (modified) {
+							modified = false
+							for (const [k, child] of Object.entries(node.dirs))
+								if (! child.files.length) {
+									for (const gc of Object.values(child.dirs)) {
+										gc.label = child.label + ' / ' + gc.label
+										node.dirs[gc.label] = gc
+									}
+									delete node.dirs[k]
+									modified = true
+								} else unify(child)
+						}
+					}
+					unify(root)
+					return root
+				})
+
+				// A flat, ordered list of the currently-visible navigable rows (dir headers, file headers
+				// and, for expanded files, their match lines), each with its tree depth for indentation.
+				// Used by both the template and keyboard navigation.
 				const flat_rows = computed(() => {
 					const rows = []
-					results.value.forEach((file, fi) => {
-						rows.push({ kind: 'file', fi })
-						if (! file.collapsed)
-							file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi, mi }))
-					})
+					if (view_mode.value === 'list') {
+						results.value.forEach((file, fi) => {
+							rows.push({ kind: 'file', fi, depth: 0 })
+							if (! file.collapsed)
+								file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi, mi, depth: 1 }))
+						})
+						return rows
+					}
+					const walk = (node, depth) => {
+						for (const d of Object.values(node.dirs)) {
+							rows.push({ kind: 'dir', key: d.key, label: d.label, depth })
+							if (! dir_collapsed.value[d.key])
+								walk(d, depth + 1)
+						}
+						for (const f of node.files) {
+							rows.push({ kind: 'file', fi: f.fi, depth })
+							const file = results.value[f.fi]
+							if (! file.collapsed)
+								file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi: f.fi, mi, depth: depth + 1 }))
+						}
+					}
+					walk(tree.value, 0)
 					return rows
 				})
+
+				const row_key = (row) =>
+					row.kind === 'dir' ? 'd:' + row.key
+						: row.kind === 'file' ? 'f:' + results.value[row.fi].path
+							: 'm:' + results.value[row.fi].path + ':' + row.mi
 
 				const is_file_selected = (fi) => {
 					const row = flat_rows.value[selected.value]
@@ -296,14 +424,17 @@
 				const activate = () => {
 					const row = flat_rows.value[selected.value]
 					if (! row) return
-					if (row.kind === 'file') toggle_file(row.fi)
+					if (row.kind === 'dir') toggle_dir(row.key)
+					else if (row.kind === 'file') toggle_file(row.fi)
 					else open_match(row.fi, row.mi)
 				}
 
 				const set_collapsed = (val) => {
 					const row = flat_rows.value[selected.value]
 					if (! row) return
-					if (row.kind === 'file')
+					if (row.kind === 'dir')
+						dir_collapsed.value[row.key] = val
+					else if (row.kind === 'file')
 						results.value[row.fi].collapsed = val
 					else if (val) {
 						// left on a match: jump up to its file header
@@ -314,17 +445,20 @@
 					}
 				}
 
-				// F4 / shift+F4 from the extension: go to next/previous match line and open it.
+				// F4 / shift+F4 from the extension: go to next/previous match line and open it. Wraps around
+				// at the ends, like the built-in search's F4.
 				const nav = (direction) => {
 					const rows = flat_rows.value
 					if (! rows.length) return
 					const step = direction === 'next' ? 1 : -1
 					let i = selected.value
-					for (;;) {
+					for (let n = 0; n < rows.length; n++) {
 						i += step
-						if (i < 0 || i >= rows.length) return
+						if (i < 0) i = rows.length - 1
+						else if (i >= rows.length) i = 0
 						if (rows[i].kind === 'match') {
 							selected.value = i
+							scroll_selected_into_view()
 							open_match(rows[i].fi, rows[i].mi)
 							return
 						}
@@ -350,7 +484,10 @@
 							break
 						case 'Enter':
 							e.preventDefault()
-							activate()
+							if (in_search)
+								trigger_search_now()
+							else
+								activate()
 							break
 						case 'ArrowRight':
 							if (in_search) break
@@ -370,19 +507,25 @@
 					}
 				}
 
+				const do_search = () => {
+					localStorage.setItem('search_query', search_query.value)
+					localStorage.setItem('search_include', include_query.value)
+					localStorage.setItem('search_exclude', exclude_query.value)
+					vscode.postMessage({
+						type: 'search',
+						query: search_query.value,
+						include: include_query.value,
+						exclude: exclude_query.value,
+					})
+				}
 				const on_search_input = () => {
 					clearTimeout(search_debouncer)
-					search_debouncer = setTimeout(() => {
-						localStorage.setItem('search_query', search_query.value)
-						localStorage.setItem('search_include', include_query.value)
-						localStorage.setItem('search_exclude', exclude_query.value)
-						vscode.postMessage({
-							type: 'search',
-							query: search_query.value,
-							include: include_query.value,
-							exclude: exclude_query.value,
-						})
-					}, 30)
+					search_debouncer = setTimeout(do_search, 120)
+				}
+				// Enter in the search box re-runs the search immediately to refresh stale results.
+				const trigger_search_now = () => {
+					clearTimeout(search_debouncer)
+					do_search()
 				}
 
 				watch(show_filters, (v) => localStorage.setItem('search_show_filters', v ? '1' : '0'))
@@ -490,7 +633,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, show_filters, results, has_more, result_count_text, search_input, results_container, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, toggle_dir, row_key, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

@@ -250,6 +250,13 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let webview = null
 	/** @type {{query:string, include?:string, exclude?:string}|null} */
 	let last_search = null
+	// Highlight for every occurrence of the query in an opened file, mirroring the built-in search.
+	let match_highlight_decoration = vscode.window.createTextEditorDecorationType({
+		backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+		overviewRulerColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+		overviewRulerLane: vscode.OverviewRulerLane.Center,
+	})
+	context.subscriptions.push(match_highlight_decoration)
 	// Runs the current search and posts the outcome. `type` is 'results' for a fresh search (webview
 	// replaces its list) or 'results_live' for an in-place update after the index changed.
 	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
@@ -297,15 +304,40 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)
 				else if (message.type === 'open_file') {
 					let uri = vscode.Uri.file(message.path)
-					let doc = await vscode.window.showTextDocument(uri)
+					let editor = await vscode.window.showTextDocument(uri)
 					if (! message.line_number)
 						return
 					let line = message.line_number - 1
-					// TODO: col
-					let range = new vscode.Range(line, 0, line, 0)
-					// TODO: this doesn't work
-					doc.selection = new vscode.Selection(range.start, range.end)
-					doc.revealRange(range, vscode.TextEditorRevealType.InCenter)
+					let terms = (last_search?.query || '').trim().split(/\s+/).filter(Boolean).map(t => t.toLowerCase())
+					// highlight every occurrence of the query terms across the file, like the built-in search
+					let ranges = []
+					if (terms.length) {
+						let full = editor.document.getText().toLowerCase()
+						for (let term of terms) {
+							let idx = 0
+							while ((idx = full.indexOf(term, idx)) !== -1) {
+								ranges.push(new vscode.Range(editor.document.positionAt(idx), editor.document.positionAt(idx + term.length)))
+								idx += term.length
+							}
+						}
+					}
+					editor.setDecorations(match_highlight_decoration, ranges)
+					// preselect the first matching term on the target line (fall back to the line start)
+					let line_text = editor.document.lineAt(line).text.toLowerCase()
+					let col = -1
+					let len = 0
+					for (let term of terms) {
+						let c = line_text.indexOf(term)
+						if (c !== -1 && (col === -1 || c < col)) {
+							col = c
+							len = term.length
+						}
+					}
+					let selection = col === -1
+						? new vscode.Selection(line, 0, line, 0)
+						: new vscode.Selection(line, col, line, col + len)
+					editor.selection = selection
+					editor.revealRange(new vscode.Range(selection.start, selection.end), vscode.TextEditorRevealType.InCenter)
 				}
 			})
 		},

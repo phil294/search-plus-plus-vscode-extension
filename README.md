@@ -181,6 +181,8 @@ Tree view inputs also missing, need web views right now:
 
 https://github.com/microsoft/vscode/issues/97190
 
+optional case sensitive textual search when including uppercase letter(s)
+
 ## Ctags
 
 Search++ is similar to [Ctags](https://en.wikipedia.org/wiki/Ctags), but in contrary to the latter, it does not require you to configure anything, and it keeps watching your files, and it integrates nicely with VSCode.

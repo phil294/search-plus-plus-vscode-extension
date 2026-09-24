@@ -122,6 +122,8 @@ const methods = {
 	autocomplete_word: (/** @type string */ word, /** @type number */ limit) => indexer.autocomplete_word(word, limit),
 	find_paths_by_word: (/** @type string */ word, /** @type number */ limit) => indexer.find_paths_by_word(word, limit),
 	find_paths_fuzzy: (/** @type string[] */ tokens, /** @type number */ limit) => indexer.find_paths_fuzzy(tokens, limit),
+	find_candidate_paths: (/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type any */ filter) => indexer.find_candidate_paths(word, is_partial, limit, filter),
+	find_lines_for_paths: (/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit) => indexer.find_lines_for_paths(paths, word, limit),
 	find_paths_with_lines_by_word: (/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type any */ filter) => indexer.find_paths_with_lines_by_word(word, is_partial, limit, filter),
 	set_verbose: (/** @type boolean */ v) => { set_verbose(v) },
 }

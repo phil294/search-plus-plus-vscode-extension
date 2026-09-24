@@ -346,12 +346,13 @@ module.exports.Indexer = class {
 			.map(r => ({ path: String(r.path), mtime: Number(r.mtime) }))
 	}
 
-	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
-		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
+	/** Fast first phase: the candidate file paths that (may) contain the query, without opening any file.
+	 * For the trigram case this is just the FTS lookup; line numbers are resolved separately (see
+	 * find_lines_for_paths) so callers can show file names immediately while the slower scan runs. */
+	find_candidate_paths(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		let start = Date.now()
 		/** @type {string[]} */
 		let paths
-		let words = [word]
 		if (is_partial_trigram_query) {
 			// FTS5 has its own query syntax (`-` = NOT, `:` = column filter, `.`/`"` special), so a raw
 			// query like `focus-visible` or `a.b` is a syntax error. Quote each whitespace token as a
@@ -364,16 +365,19 @@ module.exports.Indexer = class {
 				paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? order by rank limit ?', [fts_query, limit])
 					.map(r => String(r.path))
 			log_debug(`fts match time: ${Date.now() - start}ms, ${paths.length} candidate file(s)`)
-			// TODO: ?? regex
-			words = word.split(/\s+/).map(w => w.toLowerCase())
 		} else
 			paths = this.find_paths_by_word(word, limit)
 
-		paths = filter_paths(paths, filter)
+		return filter_paths(paths, filter)
+	}
 
-		let words_lower = words.map(w => w.toLowerCase())
+	/** Second phase: open the given candidate files and collect the matching lines. Kept separate from
+	 * find_candidate_paths so a caller can render file names first, then fill in line numbers. */
+	find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit) {
+		let start = Date.now()
+		// TODO: ?? regex
+		let words_lower = word.split(/\s+/).map(w => w.toLowerCase())
 
-		let t_scan = Date.now()
 		let results = []
 		let total_matches = 0
 
@@ -421,8 +425,15 @@ module.exports.Indexer = class {
 					log_error('Error reading file for matches:', file_path, err.message)
 			}
 
-		log_debug(`find matches with lines time: ${(Date.now() - start) / 1000} seconds (scan ${Date.now() - t_scan}ms), ${results.length} files with matches, ${total_matches} total matches`)
+		log_debug(`scan time: ${Date.now() - start}ms, ${results.length} files with matches, ${total_matches} total matches`)
 		return { results, has_more: total_matches >= limit }
+	}
+
+	/** Convenience: run both phases in one go (candidate paths + line scan). */
+	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
+		let paths = this.find_candidate_paths(word, is_partial_trigram_query, limit, filter)
+		return this.find_lines_for_paths(paths, word, limit)
 	}
 }
 

@@ -98,6 +98,14 @@ class IndexerClient {
 		return /** @type {Promise<{path:string, mtime:number}[]>} */ (this.call('find_paths_fuzzy', tokens, limit)) // eslint-disable-line no-extra-parens
 	}
 
+	find_candidate_paths(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+		return /** @type {Promise<string[]>} */ (this.call('find_candidate_paths', word, is_partial, limit, filter)) // eslint-disable-line no-extra-parens
+	}
+
+	find_lines_for_paths(/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit) {
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_lines_for_paths', paths, word, limit)) // eslint-disable-line no-extra-parens
+	}
+
 	find_paths_with_lines_by_word(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_paths_with_lines_by_word', word, is_partial, limit, filter)) // eslint-disable-line no-extra-parens
 	}

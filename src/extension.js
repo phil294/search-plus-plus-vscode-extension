@@ -250,6 +250,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let webview = null
 	/** @type {{query:string, include?:string, exclude?:string}|null} */
 	let last_search = null
+	// Bumped on every new search/clear so a slow phase-2 (line scan) from a superseded query can't
+	// overwrite the results of the query the user is now looking at.
+	let search_gen = 0
 	// Highlight for every occurrence of the query in an opened file, mirroring the built-in search.
 	let match_highlight_decoration = vscode.window.createTextEditorDecorationType({
 		backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
@@ -258,7 +261,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	})
 	context.subscriptions.push(match_highlight_decoration)
 	// Runs the current search and posts the outcome. `type` is 'results' for a fresh search (webview
-	// replaces its list) or 'results_live' for an in-place update after the index changed.
+	// replaces its list) or 'results_live' for an in-place update after the index changed. A fresh
+	// search is streamed in two phases: the candidate file names first (fast, each shown with the query
+	// text as a placeholder line), then the resolved line numbers once the files have been scanned.
 	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
@@ -267,13 +272,40 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			exclude: parse_patterns(params.exclude),
 			roots: folders.map(f => f.uri.path),
 		}
-		let found = await indexer_client.find_paths_with_lines_by_word(params.query, true, 1000, filter) // TODO configurable. shouldn't be too large though as this runs at ~30 Hz
-		webview?.webview.postMessage({
-			type,
-			...found,
-			results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
-			workspace_folders,
-		})
+		let gen = ++search_gen // TODO configurable limit. shouldn't be too large though as this runs at ~100 Hz
+		if (type === 'results') {
+			let paths = await indexer_client.find_candidate_paths(params.query, true, 1000, filter)
+			if (gen !== search_gen)
+				return
+			webview?.webview.postMessage({
+				type,
+				phase: 'paths',
+				has_more: false,
+				results: paths.map(path => ({ path, icon: icon_file_name(path), matches: [{ line_number: 1, line_text: params.query, placeholder: true }] })),
+				workspace_folders,
+			})
+			let found = await indexer_client.find_lines_for_paths(paths, params.query, 1000)
+			if (gen !== search_gen)
+				return
+			webview?.webview.postMessage({
+				type,
+				phase: 'lines',
+				...found,
+				results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+				workspace_folders,
+			})
+		} else {
+			let found = await indexer_client.find_paths_with_lines_by_word(params.query, true, 1000, filter)
+			if (gen !== search_gen)
+				return
+			webview?.webview.postMessage({
+				type,
+				phase: 'lines',
+				...found,
+				results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+				workspace_folders,
+			})
+		}
 	}
 	// After the index changes, refresh the visible results in place (only when the panel is visible and
 	// there is an active query) so stale matches disappear without the user re-searching.
@@ -297,8 +329,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			webview_view.webview.onDidReceiveMessage(async (message) => {
 				if (message.type === 'search') {
 					last_search = { query: message.query, include: message.include, exclude: message.exclude }
-					if (! message.query?.trim())
-						return webview?.webview.postMessage({ type: 'results', results: [], workspace_folders: [] })
+					if (! message.query?.trim()) {
+						search_gen++ // cancel any in-flight phase-2 from a previous query
+						return webview?.webview.postMessage({ type: 'results', phase: 'lines', results: [], has_more: false, workspace_folders: [] })
+					}
 					await run_search(last_search, 'results')
 				} else if (message.type === 'has_results')
 					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)

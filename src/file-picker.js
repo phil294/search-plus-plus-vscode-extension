@@ -359,7 +359,19 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		qp.busy = true
 		search_debounce = setTimeout(async () => {
 			try {
-				let { results } = await indexer_client.find_paths_with_lines_by_word(query, true, 2000, { roots })
+				// Phase 1: candidate file names, shown immediately (open at line 1 until lines resolve).
+				let paths = await indexer_client.find_candidate_paths(query, true, 2000, { roots })
+				if (my_token !== workspace_token)
+					return
+				qp.items = paths.map(p => ({
+					label: p.split('/').pop() || p,
+					description: relativize(p, roots),
+					iconPath: file_icon(p),
+					alwaysShow: true,
+					_action: { type: 'open', path: p, line: 1 },
+				}))
+				// Phase 2: resolve the matching line numbers (may expand to several entries per file).
+				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000)
 				if (my_token !== workspace_token)
 					return
 				/** @type {any[]} */
@@ -386,7 +398,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				if (my_token === workspace_token)
 					qp.busy = false
 			}
-		}, 120)
+		}, 10)
 	}
 
 	// Single-flight: never run two update_files bodies at once. Keystrokes arriving mid-run collapse

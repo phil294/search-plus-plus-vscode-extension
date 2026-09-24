@@ -577,15 +577,18 @@
 					}
 					CSS.highlights.clear()
 					const ranges = []
-					const search_terms_lower = search_query.value.trim().split(/\s+/).filter(Boolean).map(t => t.toLowerCase())
+					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive
+					const q = search_query.value.trim()
+					const case_sensitive = q.toLowerCase() !== q
+					const search_terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
 					const line_elements = document.querySelectorAll('.line-text')
 					line_elements.forEach(element => {
 						const text = element.textContent
 						if (! text) return
-						const lower_text = text.toLowerCase()
-						search_terms_lower.forEach(term => {
+						const haystack = case_sensitive ? text : text.toLowerCase()
+						search_terms.forEach(term => {
 							let index = 0
-							while ((index = lower_text.indexOf(term, index)) !== -1) {
+							while ((index = haystack.indexOf(term, index)) !== -1) {
 								const range = new Range()
 								const text_node = element.firstChild
 								if (text_node && text_node.nodeType === Node.TEXT_NODE) {

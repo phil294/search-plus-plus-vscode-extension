@@ -1,5 +1,5 @@
 let vscode = require('vscode')
-const { log_error } = require('./log')
+const { log_error, log_debug } = require('./log')
 const { load_icon_mapping, icon_file_name } = require('./file-icons')
 
 /** @typedef {import('./indexer-client').IndexerClient} IndexerClient */
@@ -267,24 +267,28 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		if (! tokens.length) {
 			// no query: recently-opened files first (within the last 5 days; older opens don't count),
 			// then most-recently-modified, then shortest path as a final tiebreak
+			let sort_ms = -1
 			if (! empty_order_cache) {
-				let now = Date.now()
+				let t_sort = Date.now()
 				let rows = all_paths.map(({ path: p, mtime }) => {
 					let recency_ts = recency ? recency.get(p) : 0
-					if (now - recency_ts > recency_ranking_window_ms)
+					if (t_sort - recency_ts > recency_ranking_window_ms)
 						recency_ts = 0
 					return { p, recency_ts, mtime }
 				})
 				rows.sort((a, b) => b.recency_ts - a.recency_ts || b.mtime - a.mtime || a.p.length - b.p.length)
 				empty_order_cache = rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) }))
+				sort_ms = Date.now() - t_sort
 			}
 			render(empty_order_cache)
+			log_debug(`file picker: empty query, ${all_paths.length} path(s), showing ${empty_order_cache.length} — ${sort_ms === -1 ? 'cached order' : `sorted in ${sort_ms}ms`}`)
 			return
 		}
 
 		// SQL prefilters to the subsequence-matchable set (lossless superset of the JS matcher), so the
 		// full per-file scan runs in C on the worker thread and JS only ranks the small candidate set.
 		let candidates
+		let t_rpc = Date.now()
 		try {
 			candidates = await indexer_client.find_paths_fuzzy(tokens, 10000)
 		} catch (e) {
@@ -293,7 +297,9 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		}
 		if (my_token !== file_token)
 			return
+		let rpc_ms = Date.now() - t_rpc
 
+		let t_score = Date.now()
 		let scored = []
 		// Only treat a basename subsequence match as a "filename match" (the +1000 tier) when it's
 		// reasonably tight: at least half of an ideal contiguous, word-anchored match for these tokens.
@@ -324,6 +330,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		}
 		scored.sort((a, b) => b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
 		render(scored)
+		log_debug(`file picker: "${query}" \u2014 ${candidates.length} candidate(s) in ${rpc_ms}ms, ${scored.length} matched, showing ${Math.min(scored.length, 500)} \u2014 score+sort ${Date.now() - t_score}ms`)
 	}
 
 	let update_text_in_file = (/** @type string */ query) => {
@@ -335,11 +342,14 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		/** @type {any[]} */
 		let items = []
 		if (query) {
-			let ql = query.toLowerCase()
+			let t0 = Date.now()
+			// case pseudo-sensitivity: an uppercase letter in the query makes matching case-sensitive
+			let case_sensitive = query.toLowerCase() !== query
+			let needle = case_sensitive ? query : query.toLowerCase()
 			let doc = editor.document
 			for (let i = 0; i < doc.lineCount; i++) {
 				let text = doc.lineAt(i).text
-				let col = text.toLowerCase().indexOf(ql)
+				let col = (case_sensitive ? text : text.toLowerCase()).indexOf(needle)
 				if (col !== -1) {
 					items.push({
 						label: text.trim() || '(blank line)',
@@ -352,6 +362,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 						break
 				}
 			}
+			log_debug(`text-in-file: "${query}"${case_sensitive ? ' (case-sensitive)' : ''} \u2014 ${items.length} match(es) in ${doc.lineCount} line(s), ${Date.now() - t0}ms`)
 		}
 		qp.items = items
 	}
@@ -370,9 +381,11 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		search_debounce = setTimeout(async () => {
 			try {
 				// Phase 1: candidate file names, shown immediately (open at line 1 until lines resolve).
+				let t_paths = Date.now()
 				let paths = await indexer_client.find_candidate_paths(query, true, 2000, { roots })
 				if (my_token !== workspace_token)
 					return
+				let paths_ms = Date.now() - t_paths
 				qp.items = paths.map(p => ({
 					label: p.split('/').pop() || p,
 					description: relativize(p, roots),
@@ -381,9 +394,11 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 					_action: { type: 'open', path: p, line: 1 },
 				}))
 				// Phase 2: resolve the matching line numbers (may expand to several entries per file).
+				let t_lines = Date.now()
 				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000, indexer_client.next_search_seq())
 				if (my_token !== workspace_token)
 					return
+				let lines_ms = Date.now() - t_lines
 				/** @type {any[]} */
 				let items = []
 				for (let r of results) {
@@ -402,6 +417,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 						break
 				}
 				qp.items = items
+				log_debug(`text-in-workspace: "${query}" — ${paths.length} candidate file(s) in ${paths_ms}ms, ${results.length} file(s)/${items.length} line item(s) in ${lines_ms}ms`)
 			} catch (e) {
 				log_error('file picker workspace search failed', e)
 			} finally {

@@ -378,7 +378,12 @@ module.exports.Indexer = class {
 	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel) {
 		let start = Date.now()
 		// TODO: ?? regex
-		let words_lower = word.split(/\s+/).map(w => w.toLowerCase())
+		// Case pseudo-sensitivity: any uppercase letter in the query switches the whole match to
+		// case-sensitive. The FTS candidate lookup is always case-insensitive, so this is a post-filter
+		// and may yield fewer than `limit` results when the candidate cap already dropped exact-case hits.
+		let case_sensitive = word.toLowerCase() !== word
+		let words = word.split(/\s+/)
+		let words_match = case_sensitive ? words : words.map(w => w.toLowerCase())
 
 		let results = []
 		let total_matches = 0
@@ -398,22 +403,22 @@ module.exports.Indexer = class {
 			try {
 				let content = readFileSync(file_path, 'utf-8')
 				let lines = content.split('\n')
-				// Lowercase the whole file once instead of per line: one native pass beats thousands of
-				// tiny toLowerCase() calls/allocations on multi-thousand-line files.
-				let lower_lines = content.toLowerCase().split('\n')
+				// Match against the original text when case-sensitive; otherwise lowercase the whole file
+				// once (one native pass beats thousands of per-line toLowerCase() calls/allocations).
+				let match_lines = case_sensitive ? lines : content.toLowerCase().split('\n')
 				let matches = []
-				let single_word = words_lower.length === 1 ? /** @type {string} */ (words_lower[0]) : null // eslint-disable-line no-extra-parens
+				let single_word = words_match.length === 1 ? /** @type {string} */ (words_match[0]) : null // eslint-disable-line no-extra-parens
 
-				for (let i = 0; i < lower_lines.length; i++) {
-					let line_lower = lower_lines[i]
-					if (! line_lower)
+				for (let i = 0; i < match_lines.length; i++) {
+					let line = match_lines[i]
+					if (! line)
 						continue
 
 					// Check if all words are in this line (fast path for the common single-token query)
-					if (single_word !== null ? line_lower.includes(single_word) : words_lower.every(word => line_lower.includes(word))) {
+					if (single_word !== null ? line.includes(single_word) : words_match.every(w => line.includes(w))) {
 						matches.push({
 							line_number: i + 1,
-							line_text: line_preview(lines[i] || '', words_lower),
+							line_text: line_preview(lines[i] || '', words_match, case_sensitive),
 						})
 						total_matches++
 						if (total_matches >= limit)
@@ -473,14 +478,14 @@ function expand_glob(/** @type string */ token) {
 	return globs
 }
 
-function line_preview(/** @type string */ line, /** @type string[] */ words_lower) {
+function line_preview(/** @type string */ line, /** @type string[] */ words, /** @type boolean */ case_sensitive) {
 	// strip leading whitespace (matches VS Code's search result preview)
 	let trimmed = line.replace(/^\s+/, '')
-	let lower = trimmed.toLowerCase()
+	let haystack = case_sensitive ? trimmed : trimmed.toLowerCase()
 	// find the earliest match position among all search words
 	let first = -1
-	for (let word of words_lower) {
-		let idx = lower.indexOf(word)
+	for (let word of words) {
+		let idx = haystack.indexOf(word)
 		if (idx !== -1 && (first === -1 || idx < first))
 			first = idx
 	}

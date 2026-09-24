@@ -348,11 +348,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					if (! message.line_number)
 						return
 					let line = message.line_number - 1
-					let terms = (last_search?.query || '').trim().split(/\s+/).filter(Boolean).map(t => t.toLowerCase())
+					let q = (last_search?.query || '').trim()
+					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive too
+					let case_sensitive = q.toLowerCase() !== q
+					let terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
 					// highlight every occurrence of the query terms across the file, like the built-in search
 					let ranges = []
 					if (terms.length) {
-						let full = editor.document.getText().toLowerCase()
+						let full = case_sensitive ? editor.document.getText() : editor.document.getText().toLowerCase()
 						for (let term of terms) {
 							let idx = 0
 							while ((idx = full.indexOf(term, idx)) !== -1) {
@@ -363,7 +366,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					}
 					editor.setDecorations(match_highlight_decoration, ranges)
 					// preselect the first matching term on the target line (fall back to the line start)
-					let line_text = editor.document.lineAt(line).text.toLowerCase()
+					let line_text = case_sensitive ? editor.document.lineAt(line).text : editor.document.lineAt(line).text.toLowerCase()
 					let col = -1
 					let len = 0
 					for (let term of terms) {

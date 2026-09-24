@@ -371,7 +371,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 					_action: { type: 'open', path: p, line: 1 },
 				}))
 				// Phase 2: resolve the matching line numbers (may expand to several entries per file).
-				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000)
+				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000, indexer_client.next_search_seq())
 				if (my_token !== workspace_token)
 					return
 				/** @type {any[]} */

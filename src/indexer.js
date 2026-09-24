@@ -372,8 +372,10 @@ module.exports.Indexer = class {
 	}
 
 	/** Second phase: open the given candidate files and collect the matching lines. Kept separate from
-	 * find_candidate_paths so a caller can render file names first, then fill in line numbers. */
-	find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit) {
+	 * find_candidate_paths so a caller can render file names first, then fill in line numbers.
+	 * `should_cancel`, when given, is polled every so often (between yields to the event loop) so a
+	 * superseded scan can be abandoned instead of running to completion on slow disks. */
+	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel) {
 		let start = Date.now()
 		// TODO: ?? regex
 		let words_lower = word.split(/\s+/).map(w => w.toLowerCase())
@@ -381,7 +383,17 @@ module.exports.Indexer = class {
 		let results = []
 		let total_matches = 0
 
-		for (let file_path of paths)
+		for (let n = 0; n < paths.length; n++) {
+			// Yield to the event loop periodically so the worker can receive a newer search; if this one
+			// has been superseded, stop reading files (each read is expensive on spinning/slow disks).
+			if (should_cancel && n > 0 && n % 50 === 0) {
+				await new Promise(resolve => setImmediate(resolve))
+				if (should_cancel()) {
+					log_debug(`scan cancelled after ${n} file(s), ${Date.now() - start}ms`)
+					return { results, has_more: false, cancelled: true }
+				}
+			}
+			let file_path = /** @type {string} */ (paths[n]) // eslint-disable-line no-extra-parens
 			try {
 				let content = readFileSync(file_path, 'utf-8')
 				let lines = content.split('\n')
@@ -424,6 +436,7 @@ module.exports.Indexer = class {
 				else
 					log_error('Error reading file for matches:', file_path, err.message)
 			}
+		}
 
 		log_debug(`scan time: ${Date.now() - start}ms, ${results.length} files with matches, ${total_matches} total matches`)
 		return { results, has_more: total_matches >= limit }
@@ -433,7 +446,7 @@ module.exports.Indexer = class {
 	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
 		let paths = this.find_candidate_paths(word, is_partial_trigram_query, limit, filter)
-		return this.find_lines_for_paths(paths, word, limit)
+		return this.find_lines_for_paths(paths, word, limit, undefined)
 	}
 }
 

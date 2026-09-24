@@ -284,7 +284,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				results: paths.map(path => ({ path, icon: icon_file_name(path), matches: [{ line_number: 1, line_text: params.query, placeholder: true }] })),
 				workspace_folders,
 			})
-			let found = await indexer_client.find_lines_for_paths(paths, params.query, 1000)
+			let found = await indexer_client.find_lines_for_paths(paths, params.query, 1000, indexer_client.next_search_seq())
 			if (gen !== search_gen)
 				return
 			webview?.webview.postMessage({

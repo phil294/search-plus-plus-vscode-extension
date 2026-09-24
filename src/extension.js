@@ -6,7 +6,7 @@ const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log
 const { IndexerClient } = require('./indexer-client')
 const { EXT_ID, word_split_regex } = require('./global')
 const { find_files, find_indexed_paths } = require('./find-files')
-const { show_file_picker } = require('./file-picker')
+const { show_file_picker, invalidate_empty_order_cache } = require('./file-picker')
 const { load_icon_mapping, icon_file_name } = require('./file-icons')
 const { RecencyStore } = require('./recency')
 const { readFileSync } = require('fs')
@@ -56,8 +56,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 	let recency = new RecencyStore(context.globalState)
 	let remember_open = (/** @type vscode.TextEditor | undefined */ editor) => {
-		if (editor?.document.uri.scheme === 'file')
+		if (editor?.document.uri.scheme === 'file') {
 			recency.touch(editor.document.uri.path)
+			invalidate_empty_order_cache() // recency change reorders the picker's empty-query list
+		}
 	}
 	remember_open(vscode.window.activeTextEditor)
 	context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(remember_open))
@@ -148,6 +150,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		is_scanning = false
 		// The worker owns the index: it diffs the new file set against what's stored, (re)indexes
 		// changed files and removes files that no longer exist.
+		invalidate_empty_order_cache() // the file set / mtimes may have changed
 		indexer_client.sync_files(/** @type {FileMeta[]} */ (new_file_metas)) // eslint-disable-line no-extra-parens
 			.catch((/** @type any */ e) => log_error('sync_files failed', e))
 	}
@@ -199,6 +202,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			indexer_client.index_files(/** @type {FileMeta[]} */ (metas)) // eslint-disable-line no-extra-parens
 				.then(() => rerun_search_live())
 				.catch((/** @type any */ e) => log_error('index_files failed', e))
+		if (metas.length)
+			invalidate_empty_order_cache() // mtimes/new files reorder the picker's empty-query list
 	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		watcher_events++
@@ -224,6 +229,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		indexed_paths.delete(uri.path)
 		name_only_paths.delete(uri.path)
 		await indexer_client.delete_paths([uri.path])
+		invalidate_empty_order_cache() // a removed file must drop out of the picker's empty-query list
 		rerun_search_live()
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			scan_debounced()

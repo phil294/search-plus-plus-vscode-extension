@@ -53,6 +53,13 @@ const recency_ranking_window_ms = 5 * 24 * 60 * 60 * 1000
 const mtime_bonus_max = 300
 const mtime_bonus_half_life_days = 14
 
+// Cache of the empty-query ordering (top slice only). Sorting every workspace path (hundreds of
+// thousands) is the one unbounded synchronous cost in the picker, so we keep the result and reuse it
+// across empty renders and picker re-opens. Invalidated (invalidate_empty_order_cache) whenever
+// recency changes (a file was opened) or the index changes (files added/removed/modified).
+/** @type {{p:string, base:string, rel:string}[] | null} */
+let empty_order_cache = null
+
 /** Score bonus in [0, mtime_bonus_max] for a file last modified `mtime` (unix seconds) ago, halving
  * every `mtime_bonus_half_life_days` days. */
 function mtime_bonus(/** @type number */ mtime) {
@@ -260,15 +267,18 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		if (! tokens.length) {
 			// no query: recently-opened files first (within the last 5 days; older opens don't count),
 			// then most-recently-modified, then shortest path as a final tiebreak
-			let now = Date.now()
-			let rows = all_paths.map(({ path: p, mtime }) => {
-				let recency_ts = recency ? recency.get(p) : 0
-				if (now - recency_ts > recency_ranking_window_ms)
-					recency_ts = 0
-				return { p, recency_ts, mtime }
-			})
-			rows.sort((a, b) => b.recency_ts - a.recency_ts || b.mtime - a.mtime || a.p.length - b.p.length)
-			render(rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) })))
+			if (! empty_order_cache) {
+				let now = Date.now()
+				let rows = all_paths.map(({ path: p, mtime }) => {
+					let recency_ts = recency ? recency.get(p) : 0
+					if (now - recency_ts > recency_ranking_window_ms)
+						recency_ts = 0
+					return { p, recency_ts, mtime }
+				})
+				rows.sort((a, b) => b.recency_ts - a.recency_ts || b.mtime - a.mtime || a.p.length - b.p.length)
+				empty_order_cache = rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) }))
+			}
+			render(empty_order_cache)
 			return
 		}
 
@@ -485,3 +495,5 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 }
 
 module.exports.show_file_picker = show_file_picker
+// Drop the cached empty-query ordering; call whenever recency or the indexed file set changes.
+module.exports.invalidate_empty_order_cache = () => { empty_order_cache = null }

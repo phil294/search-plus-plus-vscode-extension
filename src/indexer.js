@@ -384,9 +384,10 @@ module.exports.Indexer = class {
 		let total_matches = 0
 
 		for (let n = 0; n < paths.length; n++) {
-			// Yield to the event loop periodically so the worker can receive a newer search; if this one
-			// has been superseded, stop reading files (each read is expensive on spinning/slow disks).
-			if (should_cancel && n > 0 && n % 50 === 0) {
+			// Yield to the event loop after every file so the worker can pick up a newer search and this
+			// (superseded) scan can bail at once. A single file can be up to maxIndexSizeMb (default 20MB),
+			// so checking only every N files could read hundreds of MB on a slow/spinning disk first.
+			if (should_cancel && n > 0) {
 				await new Promise(resolve => setImmediate(resolve))
 				if (should_cancel()) {
 					log_debug(`scan cancelled after ${n} file(s), ${Date.now() - start}ms`)

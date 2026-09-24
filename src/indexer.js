@@ -362,7 +362,11 @@ module.exports.Indexer = class {
 			if (! fts_query)
 				paths = []
 			else
-				paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? order by rank limit ?', [fts_query, limit])
+				// No `order by rank`: ranking forces SQLite to materialise and sort the ENTIRE match set
+				// (200ms+ for a common trigram like "com"), whereas an unordered query streams the first
+				// `limit` rows and stops (~1-3ms). BM25 rank over trigrams is a poor relevance signal for a
+				// substring search anyway; the line scan + UI decide final presentation.
+				paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? limit ?', [fts_query, limit])
 					.map(r => String(r.path))
 			log_debug(`fts match time: ${Date.now() - start}ms, ${paths.length} candidate file(s)`)
 		} else

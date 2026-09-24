@@ -2,6 +2,8 @@
 set -e
 set -o pipefail
 
+node --version >/dev/null || { echo "node missing"; exit 1; }
+
 pause() {
     read -r -n 1 -s -p 'Press any key to continue. . .'
     echo

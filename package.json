@@ -1,7 +1,7 @@
 {
 	"name": "search-plusplus",
 	"description": "A fast, indexed full text search VSCode extension, with optional intellisense",
-	"version": "0.0.8",
+	"version": "0.0.9",
 	"icon": "img/logo.png",
 	"publisher": "phil294",
 	"private": false,
@@ -52,6 +52,11 @@
 				"command": "search++.focusPreviousResult",
 				"title": "Focus Previous Search Result",
 				"category": "Search++"
+			},
+			{
+				"command": "search++.rebuildIndex",
+				"title": "Rebuild Index",
+				"category": "Search++"
 			}
 		],
 		"keybindings": [
@@ -64,6 +69,46 @@
 				"command": "search++.focusPreviousResult",
 				"key": "shift+f4",
 				"when": "search++.hasResults"
+			},
+			{
+				"command": "-workbench.action.findInFiles",
+				"key": "ctrl+shift+f",
+				"mac": "cmd+shift+f"
+			},
+			{
+				"command": "search++.search",
+				"key": "ctrl+shift+f",
+				"mac": "cmd+shift+f"
+			},
+			{
+				"command": "-workbench.action.quickOpen",
+				"key": "ctrl+p",
+				"mac": "cmd+p"
+			},
+			{
+				"command": "search++.filePicker",
+				"key": "ctrl+p",
+				"mac": "cmd+p"
+			},
+			{
+				"command": "-workbench.action.gotoSymbol",
+				"key": "ctrl+shift+o",
+				"mac": "cmd+shift+o"
+			},
+			{
+				"command": "search++.goToTextInFile",
+				"key": "ctrl+shift+o",
+				"mac": "cmd+shift+o"
+			},
+			{
+				"command": "-workbench.action.showAllSymbols",
+				"key": "ctrl+t",
+				"mac": "cmd+t"
+			},
+			{
+				"command": "search++.goToTextInWorkspace",
+				"key": "ctrl+t",
+				"mac": "cmd+t"
 			}
 		],
 		"viewsContainers": {
@@ -91,6 +136,37 @@
 					"description": "When enabled, writes verbose debug output to the 'Search++' output channel. Leave off unless you are diagnosing a problem.",
 					"type": "boolean",
 					"default": false
+				},
+				"search++.watcherExclude": {
+					"type": "object",
+					"default": {},
+					"markdownDescription": "Additional exclude globs for indexing, same `{ \"**/glob\": true }` format as `#files.watcherExclude#` / `#search.exclude#`. Takes precedence over all of those when patterns conflict."
+				},
+				"search++.useIgnoreFiles": {
+					"type": [
+						"boolean",
+						"null"
+					],
+					"default": null,
+					"markdownDescription": "Override `#search.useIgnoreFiles#` for Search++ indexing. When unset (null), inherits the native value. Set to `false` to also full-text index gitignored files (e.g. vendored dependencies)."
+				},
+				"search++.useGlobalIgnoreFiles": {
+					"type": [
+						"boolean",
+						"null"
+					],
+					"default": null,
+					"markdownDescription": "Override `#search.useGlobalIgnoreFiles#` for Search++ indexing. When unset (null), inherits the native value."
+				},
+				"search++.maxIndexSizeMb": {
+					"type": "number",
+					"default": 20,
+					"markdownDescription": "Skip full-text indexing of files larger than this many megabytes (they stay listed in the file picker). Applies to newly added/changed files only; run the \"Search++: Rebuild Index\" command to apply it to the whole workspace."
+				},
+				"search++.maxAverageLineLength": {
+					"type": "number",
+					"default": 300,
+					"markdownDescription": "Skip full-text indexing of files whose average line length exceeds this (minified/generated/data files stay listed name-only). Applies to newly added/changed files only; run the \"Search++: Rebuild Index\" command to apply it to the whole workspace."
 				}
 			}
 		}

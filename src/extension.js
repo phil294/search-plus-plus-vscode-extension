@@ -14,6 +14,10 @@ const { readFileSync } = require('fs')
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
 
+// Shortest word prefix we run word-autocomplete for. Below this, a `prefix*` index scan matches a huge
+// slice of the vocabulary (slow, blocks the single worker thread) while being barely useful.
+const min_completion_prefix_length = 3
+
 process.on('unhandledRejection', (/** @type any */ err) => {
 	// Process-global: VS Code runs all extensions in one host, so this also catches rejections from
 	// other extensions (e.g. the built-in Git extension's IsInSubmodule errors). Those never touch our
@@ -398,12 +402,17 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// this very extension provides just *so many* results regardless of what you type.
 	// Tried several other patterns / args, this is the best I could come up with.
 	context.subscriptions.push(vscode.languages.registerCompletionItemProvider({ pattern: '**' }, {
-		async provideCompletionItems(doc, pos) {
+		async provideCompletionItems(doc, pos, token) {
 			let word = (doc.getText(doc.getWordRangeAtPosition(pos)).match(word_split_regex) || [])[0]
 			log_debug('provideCompletionItems', word)
-			if (! word) // || word.length < min_word_length)
+			// VS Code fires this on every keystroke from the first letter; a 1-2 char prefix matches a huge
+			// slice of the index (slow) and is rarely useful, and the single worker thread would be blocked
+			// for that whole query, stalling every other request. Only answer once enough has been typed.
+			if (! word || word.length < min_completion_prefix_length)
 				return
 			let dict = await indexer_client.autocomplete_word(word, 2000) // TODO configurable
+			if (token.isCancellationRequested) // the user typed on; VS Code has moved to a newer request
+				return
 			log_debug(`${dict.length} results`)
 			return dict.map((d) => {
 				let item = new vscode.CompletionItem(String(d), vscode.CompletionItemKind.Text)

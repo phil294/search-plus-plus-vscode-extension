@@ -210,6 +210,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			invalidate_empty_order_cache() // mtimes/new files reorder the picker's empty-query list
 	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
+		if (uri.fsPath.endsWith('/FETCH_HEAD'))
+			return false
 		watcher_events++
 		log_debug('file changed', uri.fsPath)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))

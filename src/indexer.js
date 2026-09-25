@@ -1,7 +1,5 @@
 let path = require('path')
 const { mkdirSync, existsSync, rmSync } = require('fs')
-const { readFile } = require('fs/promises')
-const { performance } = require('perf_hooks')
 const micromatch = require('micromatch')
 const { log_debug, log_info, log_error, log_warn } = require('./log')
 const { word_split_regex } = require('./global')
@@ -97,7 +95,7 @@ module.exports.Indexer = class {
 			mkdirSync(index_path, { recursive: true })
 		log_debug('search index: ' + index_path)
 
-		let db_path = path.join(index_path, 'index5.db') // version bump after scheme change
+		let db_path = path.join(index_path, 'index6.db') // version bump after scheme change
 		this.db = new Db(db_path)
 
 		try {
@@ -127,19 +125,19 @@ module.exports.Indexer = class {
 	}
 
 	init_db() {
-		// TODO: / search fts
-		// fts: see docs @ sqlite.org/fts5.html
-		// not using external content table because we don't want to store the huge text fields.
-		// not using built-in cross-table rowid references because bulk inserting them doesn't seem possible easily (?)
-		// pure content-less table also doesn't suffice because we need the paths, so they are now referred to from a separate table.
-		// inserts into fts table can't be trigger-based because the `text` field isn't available for files inserts.
-		/*
-		autocomplete needs a search backend that keeps reference to all stored words full (aka NO trigram)
-		for case-insensitive lookup
-		and also needs the results case sensitive, for which you need an extra table because sqlite fts5 can't do both.
-		go-to needs full words also.
-		fts trigram necessary for partial matches (search).
-		*/
+		// Schema (fts5 docs @ sqlite.org/fts5.html):
+		//   file          — one row per indexed path (+ mtime and the content-indexed intent flag).
+		//   file_content  — the word list per file (case-preserved + lowercased) powering autocomplete
+		//                   and go-to-definition. sqlite's case-insensitivity is ascii-only without ICU,
+		//                   so we store both forms; fts trigram can't do whole-word/frequency lookups.
+		//   line          — one row per non-empty source line (file_id, 1-based line_no, text). Storing
+		//                   the line text lets a search return the matching file + line number + preview
+		//                   directly from the index, with NO file reads at query time.
+		//   line_search_fts_trigram — contentless trigram index over line text (substring search). Kept
+		//                   in sync with `line` by the two triggers below; we retrieve text/line_no by
+		//                   joining fts.rowid back to `line`. recursive_triggers is off (default), so an
+		//                   FK-cascade delete of a `line` row does NOT fire line_ad — callers that need
+		//                   the fts updated delete from `line` explicitly (see delete_doc_by_path).
 		this.db.exec(`
 			pragma page_size = 8192;
 			pragma journal_mode = wal;
@@ -153,7 +151,15 @@ module.exports.Indexer = class {
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
 			create index if not exists idx_file_content_word on file_content(word);
 			create index if not exists idx_file_content_word_lower on file_content(word_lower);
-			create virtual table if not exists file_content_search_index_fts_trigram using FTS5(text, content='', tokenize='trigram', contentless_delete=1);
+			create table if not exists line(id integer primary key, file_id integer references file(id) on delete cascade on update restrict, line_no integer, text text);
+			create index if not exists idx_line_file_id on line(file_id);
+			create virtual table if not exists line_search_fts_trigram using FTS5(text, content='', tokenize='trigram', contentless_delete=1);
+			create trigger if not exists line_ai after insert on line begin
+				insert into line_search_fts_trigram(rowid, text) values (new.id, new.text);
+			end;
+			create trigger if not exists line_ad after delete on line begin
+				delete from line_search_fts_trigram where rowid = old.id;
+			end;
 		`)
 	}
 
@@ -169,14 +175,15 @@ module.exports.Indexer = class {
 	}
 
 	/** Wipe every indexed file and its content. Used by the manual "Rebuild Index" command so the next
-	 * full scan reindexes from scratch. file_content rows cascade via the foreign key; the contentless
-	 * FTS table is cleared explicitly. */
+	 * full scan reindexes from scratch. file_content and line rows cascade via the foreign key; the
+	 * contentless FTS is cleared explicitly (a cascade delete of `line` does not fire the sync trigger
+	 * because recursive_triggers is off). */
 	clear_all() {
-		this.db.exec('delete from file; delete from file_content_search_index_fts_trigram;')
+		this.db.exec('delete from line_search_fts_trigram; delete from file;')
 	}
 
 	/** Folds the WAL back into the main db file. Passive auto-checkpointing alone can lag far behind
-	 * during a large (re)index, leaving index5.db-wal at hundreds of MB until VS Code restarts; call
+	 * during a large (re)index, leaving index6.db-wal at hundreds of MB until VS Code restarts; call
 	 * this once a batch of writes is done (not per-write, since TRUNCATE blocks concurrent readers). */
 	checkpoint() {
 		let t = Date.now()
@@ -203,14 +210,41 @@ module.exports.Indexer = class {
 		let content_docs = docs.filter(doc => doc.text != null)
 		let text_chars = 0
 		let word_count = 0
+		let line_count = 0
 		let t_fts = t_file
 		let t_words = t_file
 		if (content_docs.length) {
 			for (let doc of content_docs)
 				text_chars += String(doc.text).length
-			let double_qmarks_content = new Array(content_docs.length).fill('(?,?)').join(',')
-			// This makes the text be split by FTS internally
-			this.db.run(`insert into file_content_search_index_fts_trigram (rowid, text) values ${double_qmarks_content}`, content_docs.map(doc => [new_id_by_path[doc.path], doc.text]).flat())
+			// Line index: one row per non-empty source line. Storing the text lets a search return the
+			// matching line + line number straight from the DB (no file reads at query time). The line_ai
+			// trigger mirrors each inserted row into the contentless trigram FTS. line_no is 1-based over the
+			// ORIGINAL file (empty lines still count) so it points at the right line when the file is opened.
+			let line_rows = []
+			for (let doc of content_docs) {
+				let file_id = new_id_by_path[doc.path]
+				let lines = String(doc.text).split('\n')
+				for (let i = 0; i < lines.length; i++) {
+					let text = /** @type {string} */ (lines[i]) // eslint-disable-line no-extra-parens
+					if (text.charCodeAt(text.length - 1) === 13) // strip a trailing \r from CRLF files
+						text = text.slice(0, -1)
+					if (text.length < 3) // trigram tokenizer emits nothing for <3 chars, so such a line can never match
+						continue
+					line_rows.push([file_id, i + 1, text])
+				}
+			}
+			line_count = line_rows.length
+			const line_rows_per_chunk = this.rows_per_chunk
+			let full_line_chunks = Math.floor(line_rows.length / line_rows_per_chunk)
+			if (full_line_chunks) {
+				let stmt = this.db.prepare(`insert into line (file_id, line_no, text) values ${new Array(line_rows_per_chunk).fill('(?,?,?)').join(',')}`)
+				for (let i = 0; i < full_line_chunks; i++)
+					stmt.run(line_rows.slice(i * line_rows_per_chunk, (i + 1) * line_rows_per_chunk).flat())
+				stmt.finalize()
+			}
+			let line_remainder = line_rows.slice(full_line_chunks * line_rows_per_chunk)
+			if (line_remainder.length)
+				this.db.run(`insert into line (file_id, line_no, text) values ${new Array(line_remainder.length).fill('(?,?,?)').join(',')}`, line_remainder.flat())
 			t_fts = Date.now()
 			// And this requires manual splitting. We need both due to
 			// case presevation, unfortunately.
@@ -256,7 +290,7 @@ module.exports.Indexer = class {
 					biggest_chars = String(doc.text).length
 					biggest_path = doc.path
 				}
-			log_info(`slow index batch ${t_commit - t_start}ms: delete=${t_delete - t_start} file+ids=${t_file - t_delete} fts=${t_fts - t_file} words=${t_words - t_fts} commit=${t_commit - t_words} | docs=${docs.length} content=${content_docs.length} words=${word_count} text=${(text_chars / 1024 / 1024).toFixed(1)}MB biggest=${(biggest_chars / 1024 / 1024).toFixed(1)}MB ${biggest_path}`)
+			log_info(`slow index batch ${t_commit - t_start}ms: delete=${t_delete - t_start} file+ids=${t_file - t_delete} lines=${t_fts - t_file} words=${t_words - t_fts} commit=${t_commit - t_words} | docs=${docs.length} content=${content_docs.length} lines=${line_count} words=${word_count} text=${(text_chars / 1024 / 1024).toFixed(1)}MB biggest=${(biggest_chars / 1024 / 1024).toFixed(1)}MB ${biggest_path}`)
 		}
 	}
 
@@ -268,9 +302,12 @@ module.exports.Indexer = class {
 			let group = paths.slice(i, i + chunk)
 			let qmarks = new Array(group.length).fill('?').join(',')
 			let old_ids = this.db.all(`select id from file where path in (${qmarks})`, group).map(r => Number(r.id))
-			this.db.run(`delete from file where path in (${qmarks})`, group)
+			// Delete the file's lines explicitly (not via the FK cascade of the file delete below): the
+			// line_ad trigger keeps the contentless FTS in sync, and recursive_triggers is off so a cascade
+			// delete would leave the FTS rows orphaned.
 			if (old_ids.length)
-				this.db.run(`delete from file_content_search_index_fts_trigram where rowid in (${new Array(old_ids.length).fill('?').join(',')})`, old_ids)
+				this.db.run(`delete from line where file_id in (${new Array(old_ids.length).fill('?').join(',')})`, old_ids)
+			this.db.run(`delete from file where path in (${qmarks})`, group)
 		}
 	}
 
@@ -295,21 +332,9 @@ module.exports.Indexer = class {
 	autocomplete_word(/** @type string */ word, /** @type number */ limit) {
 		log_debug('autocompleting', word, 'with limit', limit)
 		let start = Date.now()
-		// TODO: escape
-		// this is 100-500ms slow even though the index is there
-		// let words = this.db.all('select distinct word from file_content where word like ? collate nocase limit ?', [word + '%', limit])
-		// this doesn't work becaues the words aren't stored, only the entire text if not contentless which is not helpful
-		// let words = this.db.all('select word from file_content_search_index_fts_trigram fts left join file_content on fts.text = file_content.word_lower and fts.rowid = file_content.file_id where text match ? limit ?', [word + '*', limit])
-		// let words = this.db.all('select word from file_content_search_index_fts_trigram_v fts_v left join file_content on fts_v.term = file_content.word_lower and fts_v.rowid = file_content.file_id where term glob ? order by cnt desc limit ?',
-		// and this doesn't work because of trigram tokenizer, `term` is just three-letter words.
-		// let words = this.db.all('select term from file_content_search_index_fts_trigram_v fts_v where term glob ? order by cnt desc limit ?',
-		// vocab/non-trigram not necessary as file_content has indexed prefix lookups
-		// let words = this.db.all('select distinct file_content.word from file_content_search_index_fts_v fts_v left join file_content on fts_v.term = file_content.word_lower where fts_v.term glob ? order by fts_v.cnt desc limit ?',
-		// let words = this.db.all('select term from file_content_search_index_fts_v fts_v where term glob ? order by cnt desc limit ?',
-		// 	[word.toLowerCase() + '*', limit])
-		// 	// .map(r => r.term)
-		// 	.map(r => r.word)
-		// orders by document frequency (!)
+		// Prefix lookup over the word table, ordered by document frequency. file_content stores each word
+		// lowercased (indexed) alongside its case-preserved form, so a `glob` prefix on word_lower is a
+		// fast indexed scan; the trigram index can't serve this (its terms are three-letter fragments).
 		let words = this.db.all('select word from file_content where word_lower glob ? group by word order by count(*) desc limit ?',
 			[word.toLowerCase() + '*', limit])
 			.map(r => r.word)
@@ -348,167 +373,83 @@ module.exports.Indexer = class {
 			.map(r => ({ path: String(r.path), mtime: Number(r.mtime) }))
 	}
 
-	/** Fast first phase: the candidate file paths that (may) contain the query, without opening any file.
-	 * For the trigram case this is just the FTS lookup; line numbers are resolved separately (see
-	 * find_lines_for_paths) so callers can show file names immediately while the slower scan runs. */
-	find_candidate_paths(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+	/** Substring search over the line index. One FTS lookup returns matching lines with their file path,
+	 * line number and text directly — no files are opened. Results are grouped by file (in the FTS's
+	 * rowid order, i.e. file then line order) and capped at `limit` total matches. `filter` applies the
+	 * picker/panel include/exclude/roots globs per path. */
+	search_lines(/** @type {string} */ word, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		let start = Date.now()
-		/** @type {string[]} */
-		let paths
-		if (is_partial_trigram_query) {
-			// FTS5 has its own query syntax (`-` = NOT, `:` = column filter, `.`/`"` special), so a raw
-			// query like `focus-visible` or `a.b` is a syntax error. Quote each whitespace token as a
-			// string literal (doubling internal quotes) -> AND of substring phrases under the trigram tokenizer.
-			let fts_query = word.trim().split(/\s+/).filter(Boolean)
-				.map(t => '"' + t.replace(/"/g, '""') + '"').join(' ')
-			if (! fts_query)
-				paths = []
-			else
-				// No `order by rank`: ranking forces SQLite to materialise and sort the ENTIRE match set
-				// (200ms+ for a common trigram like "com"), whereas an unordered query streams the first
-				// `limit` rows and stops (~1-3ms). BM25 rank over trigrams is a poor relevance signal for a
-				// substring search anyway; the line scan + UI decide final presentation.
-				paths = this.db.all('select path from file inner join file_content_search_index_fts_trigram fts on file.id = fts.rowid where fts.text match ? limit ?', [fts_query, limit])
-					.map(r => String(r.path))
-			log_debug(`fts match time: ${Date.now() - start}ms, ${paths.length} candidate file(s)`)
-		} else
-			paths = this.find_paths_by_word(word, limit)
-
-		return filter_paths(paths, filter)
-	}
-
-	/** Second phase: open the given candidate files and collect the matching lines. Kept separate from
-	 * find_candidate_paths so a caller can stream results. Files are read in small parallel batches so
-	 * several disk reads overlap on libuv's threadpool instead of blocking one file at a time.
-	 * `should_cancel`, when given, is polled after each batch so a superseded scan can be abandoned
-	 * instead of running to completion. `time_budget_ms`, when given, returns the results gathered so far
-	 * once that wall-time is spent (along with scanned_count) so the caller can render a chunk and call
-	 * again with the remaining paths for the next chunk. */
-	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel, /** @type {number=} */ time_budget_ms) {
-		let start = performance.now()
-		// Case pseudo-sensitivity: any uppercase letter in the query switches the whole match to
-		// case-sensitive. The FTS candidate lookup is always case-insensitive, so this is a post-filter
-		// and may yield fewer than `limit` results when the candidate cap already dropped exact-case hits.
+		let fts_query = build_fts_query(word)
+		if (! fts_query)
+			return { results: [], has_more: false }
+		// Case pseudo-sensitivity: any uppercase letter switches the whole query to case-sensitive. The
+		// trigram index is case-insensitive and cannot enforce words shorter than 3 chars, so each candidate
+		// line is re-checked with a same-line regex (a lookahead per word). The line text is already in hand,
+		// so this costs nothing extra and keeps precision identical to a literal scan.
 		let case_sensitive = word.toLowerCase() !== word
 		let words = word.split(/\s+/).filter(Boolean)
 		let words_match = case_sensitive ? words : words.map(w => w.toLowerCase())
-		// One regex matches a whole line that contains every word (any order): a lookahead per word asserts
-		// the word occurs within the line, then `[^\n]*` captures the original-case line for the preview.
-		// `m` anchors ^/$ to line boundaries and `i` folds case IN PLACE, so we never allocate a lowercased
-		// copy of the file nor split it into a per-line array.
-		let line_re = new RegExp('^' + words.map(w => '(?=[^\\n]*' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')').join('') + '[^\\n]*$', case_sensitive ? 'gm' : 'gim')
-
-		let results = []
+		let line_re = new RegExp('^' + words.map(w => '(?=[^\\n]*' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')').join('') + '[^\\n]*$', case_sensitive ? '' : 'i')
+		let path_ok = build_path_filter(filter)
+		// No `order by rank`: ranking forces SQLite to materialise and sort the ENTIRE match set, whereas an
+		// unordered query streams the first `limit` rows and stops. Rows arrive in rowid (file/line) order.
+		let rows = this.db.all('select f.path as path, l.line_no as line_no, l.text as text from line_search_fts_trigram fts inner join line l on l.id = fts.rowid inner join file f on f.id = l.file_id where fts.text match ? limit ?', [fts_query, limit])
+		let t_query = Date.now()
+		/** @type {Map<string, {line_number:number, line_text:string}[]>} */
+		let by_path = new Map()
 		let total_matches = 0
-		// Timing breakdown to locate the scan bottleneck: parallel-read wall time vs the serial CPU
-		// stages (utf-8 decode and the in-place regex line scan).
-		let t_read = 0
-		let t_decode = 0
-		let t_match = 0
-		// Read-ahead pipeline: keep up to `read_ahead` reads in flight (parallel FS, disk stays busy)
-		// while scanning files one at a time. Reads run ahead of the scan cursor, but only the current
-		// file blocks a chunk, so a few large files still stream quickly. The budget is checked after each
-		// scanned file; on break the still-in-flight reads (<= read_ahead) are dropped and re-read next
-		// chunk (cheap: warm cache), and never decoded/scanned twice.
-		// Overlap reads with the single-threaded scan by keeping the libuv threadpool saturated. The pool is
-		// 4 by default and CANNOT be enlarged from a worker thread (UV_THREADPOOL_SIZE via the Worker env is
-		// ignored — the pool is process-global and already initialised by the host; verified empirically), so
-		// read_ahead=3 under-fed it. A wider read-ahead keeps all pool threads busy plus a small queue; the
-		// tiny first chunk stays shallow so a budget break drops (and re-reads) fewer in-flight files.
-		let read_ahead = time_budget_ms && time_budget_ms < 100 ? 4 : 8
-		let n = 0
-		let read_idx = 0
-		/** @type {Promise<Buffer|Error>[]} */
-		let inflight = []
-		// On success the promise resolves to the Buffer; on failure to the Error itself (never rejects) so
-		// one unreadable file doesn't abort the pipeline.
-		let fill_reads = () => {
-			while (inflight.length < read_ahead && read_idx < paths.length) {
-				inflight.push(readFile(/** @type {string} */ (paths[read_idx])).then(buf => buf, (/** @type {any} */ err) => err)) // eslint-disable-line no-extra-parens
-				read_idx++
-			}
-		}
-		fill_reads()
-		while (n < paths.length) {
-			let t0 = performance.now()
-			let buf = await /** @type {Promise<Buffer|Error>} */ (inflight.shift()) // eslint-disable-line no-extra-parens
-			t_read += performance.now() - t0
-			fill_reads()
-			// The await above yielded to the event loop, so a newer search has had a chance to bump the seq.
-			if (should_cancel && should_cancel()) {
-				log_debug(`scan cancelled after ${n} file(s), ${(performance.now() - start).toFixed(0)}ms`)
-				return { results, has_more: false, cancelled: true, scanned_count: n }
-			}
-			let file_path = /** @type {string} */ (paths[n]) // eslint-disable-line no-extra-parens
-			n++
-			if (! Buffer.isBuffer(buf)) {
-				// Read failed: the file may have been deleted/renamed/permission-changed since it was
-				// indexed (watcher events are debounced, so the index can briefly lag reality); this is
-				// routine, not exceptional, so it must not spam the error log.
-				let err = /** @type {any} */ (buf) // eslint-disable-line no-extra-parens
-				if (err && (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM'))
-					log_debug('skipping unreadable file for matches:', file_path, err.code)
-				else if (err)
-					log_error('Error reading file for matches:', file_path, err.message)
+		let has_more = false
+		for (let row of rows) {
+			let text = String(row.text)
+			if (! line_re.test(text))
 				continue
+			let file_path = String(row.path)
+			if (! path_ok(file_path))
+				continue
+			let matches = by_path.get(file_path)
+			if (! matches) {
+				matches = []
+				by_path.set(file_path, matches)
 			}
-			let td = performance.now()
-			let content = buf.toString('utf8')
-			t_decode += performance.now() - td
-			let tm = performance.now()
-			let matches = []
-			// Walk matched lines in file order; derive each line number by counting the newlines between
-			// the previous match and this one (native indexOf, no per-line string allocation).
-			line_re.lastIndex = 0
-			let line_no = 1
-			let counted_to = 0
-			let m = line_re.exec(content)
-			while (m !== null) {
-				let idx = m.index
-				let p = content.indexOf('\n', counted_to)
-				while (p !== -1 && p < idx) {
-					line_no++
-					p = content.indexOf('\n', p + 1)
-				}
-				counted_to = idx
-				matches.push({
-					line_number: line_no,
-					line_text: line_preview(m[0], words_match, case_sensitive),
-				})
-				total_matches++
-				// A matched line is non-empty (the lookaheads require the words) so lastIndex has advanced;
-				// this only guards a degenerate empty-word regex from looping forever on a zero-length match.
-				if (line_re.lastIndex === idx)
-					line_re.lastIndex++
-				if (total_matches >= limit)
-					break
-				m = line_re.exec(content)
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, words_match, case_sensitive) })
+			total_matches++
+			if (total_matches >= limit) {
+				has_more = true
+				break
 			}
-			t_match += performance.now() - tm
-
-			if (matches.length > 0)
-				results.push({
-					path: String(file_path),
-					matches,
-				})
-			// Stream once the match cap or the time budget is reached; the caller renders this chunk and
-			// calls again with the remaining paths (from scanned_count).
-			if (total_matches >= limit)
-				break
-			if (time_budget_ms && performance.now() - start >= time_budget_ms)
-				break
 		}
-
-		log_debug(`scan time: ${(performance.now() - start).toFixed(0)}ms (read ${t_read.toFixed(0)} decode ${t_decode.toFixed(0)} match ${t_match.toFixed(0)}), ${results.length} files with matches, ${total_matches} total matches`)
-		return { results, has_more: total_matches >= limit, scanned_count: n }
+		let results = [...by_path.entries()].map(([path, matches]) => ({ path, matches }))
+		log_debug(`search_lines: ${Date.now() - start}ms (sql+fetch ${t_query - start}ms, filter+group ${Date.now() - t_query}ms), fetched ${rows.length} rows -> ${results.length} files, ${total_matches} matches | fts=${fts_query}`)
+		return { results, has_more }
 	}
 
-	/** Convenience: run both phases in one go (candidate paths + line scan). */
-	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
-		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
-		let paths = this.find_candidate_paths(word, is_partial_trigram_query, limit, filter)
-		return this.find_lines_for_paths(paths, word, limit, undefined, undefined)
+	/** Go-to-definition support: lines that contain the exact word, in files where it appears as a whole
+	 * word (via the case-preserved word table). Resolved straight from the line index — no file reads. */
+	find_definition_lines(/** @type {string} */ word, /** @type {number} */ limit) {
+		let like = '%' + word.replace(/[\\%_]/g, ch => '\\' + ch) + '%'
+		let rows = this.db.all("select f.path as path, l.line_no as line_no, l.text as text from file_content fc inner join line l on l.file_id = fc.file_id inner join file f on f.id = fc.file_id where fc.word = ? and l.text like ? escape '\\' limit ?", [word, like, limit])
+		/** @type {Map<string, {line_number:number, line_text:string}[]>} */
+		let by_path = new Map()
+		for (let row of rows) {
+			let file_path = String(row.path)
+			let matches = by_path.get(file_path)
+			if (! matches) {
+				matches = []
+				by_path.set(file_path, matches)
+			}
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(String(row.text), [word], true) })
+		}
+		return { results: [...by_path.entries()].map(([path, matches]) => ({ path, matches })), has_more: false }
 	}
+}
+
+/** FTS5 query string for a user query: AND of quoted trigram phrases. FTS5 has its own query syntax
+ * (`-` = NOT, `:` = column filter, `.`/`"` special), so a raw query like `focus-visible` or `a.b` is a
+ * syntax error; quoting each whitespace token as a string literal (doubling internal quotes) turns it
+ * into a substring phrase under the trigram tokenizer. Returns '' when the query has no usable tokens. */
+function build_fts_query(/** @type string */ word) {
+	return word.trim().split(/\s+/).filter(Boolean)
+		.map(t => '"' + t.replace(/"/g, '""') + '"').join(' ')
 }
 
 /** Turns one user-entered "files to include/exclude" token into an array of micromatch globs,
@@ -563,17 +504,19 @@ function relativize(/** @type string */ p, /** @type {string[]|undefined} */ roo
 	return idx === -1 ? p : p.slice(idx + 1)
 }
 
-function filter_paths(/** @type string[] */ paths, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ { include, exclude, roots } = {}) {
+/** Builds a per-path predicate from the include/exclude/roots globs (approximating VSCode's
+ * "files to include/exclude"). Returns a function that is true when the path should be kept. */
+function build_path_filter(/** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ { include, exclude, roots } = {}) {
 	let include_globs = (include || []).flatMap(expand_glob)
 	let exclude_globs = (exclude || []).flatMap(expand_glob)
 	if (! include_globs.length && ! exclude_globs.length)
-		return paths
-	return paths.filter(p => {
+		return () => true
+	return (/** @type string */ p) => {
 		let rel = relativize(p, roots)
 		if (include_globs.length && ! micromatch.isMatch(rel, include_globs, { dot: true }))
 			return false
 		if (exclude_globs.length && micromatch.isMatch(rel, exclude_globs, { dot: true }))
 			return false
 		return true
-	})
+	}
 }

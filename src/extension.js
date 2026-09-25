@@ -273,14 +273,9 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	})
 	context.subscriptions.push(match_highlight_decoration)
 	// Runs the current search and posts the outcome. `type` is 'results' for a fresh search (webview
-	// replaces its list) or 'results_live' for an in-place update after the index changed. A fresh
-	// search is STREAMED in time-budgeted chunks: scan candidate files until a small wall-time budget is
-	// spent, post the results gathered so far (rendered at once, with real line numbers), then resume and
-	// repeat. The first chunks use a tiny budget so the first line appears almost immediately; once ~50
-	// results are on screen the budget grows so the remainder streams in fewer, larger chunks. Each posted
-	// set is a stable prefix of the next, so there is no placeholder skeleton and no layout shift.
-	let search_first_chunk_ms = 51 // tiny budget for the first chunk (fast first paint)
-	let search_later_chunk_ms = 501 // wider budget for every chunk after the first
+	// replaces its list) or 'results_live' for an in-place update after the index changed. The line index
+	// resolves matches (file + line number + preview) in a single DB query with no file reads, so the
+	// whole result set is posted at once — no streaming, no placeholder skeleton, no layout shift.
 	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
@@ -289,62 +284,18 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			exclude: parse_patterns(params.exclude),
 			roots: folders.map(f => f.uri.path),
 		}
-		let gen = ++search_gen // TODO configurable limit. shouldn't be too large though as this runs at ~100 Hz
-		if (type === 'results') {
-			let paths = await indexer_client.find_candidate_paths(params.query, true, 1000, filter)
-			if (gen !== search_gen)
-				return
-			// A single all-lowercase word (>=3 chars) resolves to an exact trigram phrase lookup, so every
-			// candidate is guaranteed to contain the substring -> the final file count is known before the
-			// scan runs and is threaded into every chunk so the count shows from the first paint. Any space
-			// or uppercase letter breaks that guarantee.
-			let q = params.query.trim()
-			let known_file_count = q.length >= 3 && ! /\s/.test(q) && q === q.toLowerCase() ? paths.length : null
-			let seq = indexer_client.next_search_seq()
-			let scanned = 0
-			let total_matches = 0
-			let has_more = false
-			/** @type {{path:string, matches:{line_number:number, line_text:string}[]}[]} */
-			let all_results = []
-			let budget = search_first_chunk_ms
-			for (;;) {
-				let chunk = await indexer_client.find_lines_for_paths(paths.slice(scanned), params.query, 1000 - total_matches, seq, budget)
-				if (gen !== search_gen)
-					return
-				scanned += chunk.scanned_count
-				all_results = all_results.concat(chunk.results)
-				total_matches += chunk.results.reduce((sum, f) => sum + f.matches.length, 0)
-				has_more = has_more || chunk.has_more
-				// Done when every candidate is scanned, the match cap is hit, or (defensive) a chunk made
-				// no progress.
-				let done = scanned >= paths.length || chunk.has_more || chunk.scanned_count === 0
-				// Only the first chunk uses the tiny budget; the rest streams in one wide-budget chunk so the
-				// remainder isn't chopped into many round-trips (each of which re-reads dropped in-flight files).
-				budget = search_later_chunk_ms
-				webview?.webview.postMessage({
-					type,
-					phase: done ? 'lines' : 'partial',
-					query: params.query,
-					has_more,
-					results: all_results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
-					known_file_count,
-					workspace_folders,
-				})
-				if (done)
-					return
-			}
-		} else {
-			let found = await indexer_client.find_paths_with_lines_by_word(params.query, true, 1000, filter)
-			if (gen !== search_gen)
-				return
-			webview?.webview.postMessage({
-				type,
-				phase: 'lines',
-				...found,
-				results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
-				workspace_folders,
-			})
-		}
+		let gen = ++search_gen
+		let found = await indexer_client.search_lines(params.query, 1000, filter)
+		if (gen !== search_gen)
+			return
+		webview?.webview.postMessage({
+			type,
+			phase: 'lines',
+			query: params.query,
+			has_more: found.has_more,
+			results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+			workspace_folders,
+		})
 	}
 	// After the index changes, refresh the visible results in place (only when the panel is visible and
 	// there is an active query) so stale matches disappear without the user re-searching.
@@ -509,7 +460,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			if (/** @type {any} */ (has_other_providers)?.length) // eslint-disable-line no-extra-parens
 				return
 			log_debug('provideDefinition', word)
-			let results = await indexer_client.find_paths_with_lines_by_word(word, false, 250)
+			let results = await indexer_client.find_definition_lines(word, 250)
 			return results.results.map(result => {
 				let uri = vscode.Uri.file(result.path)
 				return result.matches.map(({ line_number }) =>

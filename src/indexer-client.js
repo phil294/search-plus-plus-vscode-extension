@@ -8,9 +8,6 @@ class IndexerClient {
 	constructor(/** @type import('vscode').ExtensionContext */ context, /** @type {{storage_path:string, verbose:boolean, on_progress:(n:number|null)=>any, index_params?:{max_index_size?:number, max_avg_line_length?:number}}} */ { storage_path, verbose, on_progress, index_params }) {
 		this.on_progress = on_progress
 		this._id = 0
-		// Monotonic, shared across all callers (search panel + file picker), so the worker can tell which
-		// line scan is newest and cancel superseded ones. See next_search_seq / find_lines_for_paths.
-		this._search_seq = 0
 		/** @type {Map<number,{resolve:(v:any)=>void, reject:(e:any)=>void}>} */
 		this._pending = new Map()
 		/** @type {{path:string, mtime:number}[]|null} */
@@ -101,21 +98,14 @@ class IndexerClient {
 		return /** @type {Promise<{path:string, mtime:number}[]>} */ (this.call('find_paths_fuzzy', tokens, limit)) // eslint-disable-line no-extra-parens
 	}
 
-	find_candidate_paths(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
-		return /** @type {Promise<string[]>} */ (this.call('find_candidate_paths', word, is_partial, limit, filter)) // eslint-disable-line no-extra-parens
+	/** Substring search over the line index: matching lines with file path, line number and preview,
+	 * resolved entirely from the DB (no file reads). */
+	search_lines(/** @type string */ word, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('search_lines', word, limit, filter)) // eslint-disable-line no-extra-parens
 	}
 
-	/** A fresh, ever-increasing token for a new line-scan request; a higher token cancels lower ones. */
-	next_search_seq() {
-		return ++this._search_seq
-	}
-
-	find_lines_for_paths(/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit, /** @type {number=} */ seq, /** @type {number=} */ time_budget_ms) {
-		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean, cancelled?:boolean, scanned_count:number}>} */ (this.call('find_lines_for_paths', paths, word, limit, seq, time_budget_ms)) // eslint-disable-line no-extra-parens
-	}
-
-	find_paths_with_lines_by_word(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
-		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_paths_with_lines_by_word', word, is_partial, limit, filter)) // eslint-disable-line no-extra-parens
+	find_definition_lines(/** @type string */ word, /** @type number */ limit) {
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_definition_lines', word, limit)) // eslint-disable-line no-extra-parens
 	}
 
 	set_verbose(/** @type boolean */ v) {

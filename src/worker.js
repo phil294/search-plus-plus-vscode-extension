@@ -110,9 +110,6 @@ function clear_index() {
 	indexer.clear_all()
 }
 
-// Highest search sequence seen so far; a line scan bails as soon as a newer one arrives (see below).
-let latest_lines_seq = 0
-
 /** @type {Record<string, (...args:any[])=>any>} */
 const methods = {
 	sync_files,
@@ -125,16 +122,8 @@ const methods = {
 	autocomplete_word: (/** @type string */ word, /** @type number */ limit) => indexer.autocomplete_word(word, limit),
 	find_paths_by_word: (/** @type string */ word, /** @type number */ limit) => indexer.find_paths_by_word(word, limit),
 	find_paths_fuzzy: (/** @type string[] */ tokens, /** @type number */ limit) => indexer.find_paths_fuzzy(tokens, limit),
-	find_candidate_paths: (/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type any */ filter) => indexer.find_candidate_paths(word, is_partial, limit, filter),
-	find_lines_for_paths: (/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit, /** @type {number|undefined} */ seq, /** @type {number|undefined} */ time_budget_ms) => {
-		// A monotonic `seq` (per search keystroke) lets a newer scan supersede an in-flight one: the
-		// worker runs RPCs one at a time, so a long scan on slow hardware would otherwise block every
-		// later keystroke. The scan yields periodically and bails once a higher seq has arrived.
-		if (typeof seq === 'number' && seq > latest_lines_seq)
-			latest_lines_seq = seq
-		return indexer.find_lines_for_paths(paths, word, limit, typeof seq === 'number' ? () => seq < latest_lines_seq : undefined, time_budget_ms)
-	},
-	find_paths_with_lines_by_word: (/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type any */ filter) => indexer.find_paths_with_lines_by_word(word, is_partial, limit, filter),
+	search_lines: (/** @type string */ word, /** @type number */ limit, /** @type any */ filter) => indexer.search_lines(word, limit, filter),
+	find_definition_lines: (/** @type string */ word, /** @type number */ limit) => indexer.find_definition_lines(word, limit),
 	set_verbose: (/** @type boolean */ v) => { set_verbose(v) },
 }
 

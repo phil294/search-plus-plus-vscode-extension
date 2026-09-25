@@ -380,22 +380,8 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		qp.busy = true
 		search_debounce = setTimeout(async () => {
 			try {
-				// Phase 1: candidate file names, shown immediately (open at line 1 until lines resolve).
-				let t_paths = Date.now()
-				let paths = await indexer_client.find_candidate_paths(query, true, 2000, { roots })
-				if (my_token !== workspace_token)
-					return
-				let paths_ms = Date.now() - t_paths
-				qp.items = paths.map(p => ({
-					label: p.split('/').pop() || p,
-					description: relativize(p, roots),
-					iconPath: file_icon(p),
-					alwaysShow: true,
-					_action: { type: 'open', path: p, line: 1 },
-				}))
-				// Phase 2: resolve the matching line numbers (may expand to several entries per file).
 				let t_lines = Date.now()
-				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000, indexer_client.next_search_seq(), undefined)
+				let { results } = await indexer_client.search_lines(query, 2000, { roots })
 				if (my_token !== workspace_token)
 					return
 				let lines_ms = Date.now() - t_lines
@@ -417,7 +403,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 						break
 				}
 				qp.items = items
-				log_debug(`text-in-workspace: "${query}" — ${paths.length} candidate file(s) in ${paths_ms}ms, ${results.length} file(s)/${items.length} line item(s) in ${lines_ms}ms`)
+				log_debug(`text-in-workspace: "${query}" — ${results.length} file(s)/${items.length} line item(s) in ${lines_ms}ms`)
 			} catch (e) {
 				log_error('file picker workspace search failed', e)
 			} finally {

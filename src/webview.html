@@ -296,7 +296,6 @@
 				const results_key = ref(0)
 				const has_more = ref(false)
 				const loading = ref(false)
-				const known_file_count = ref(null)
 				const workspace_folders = ref([])
 				const search_input = ref(null)
 				const results_container = ref(null)
@@ -321,10 +320,8 @@
 				let active_ranges = []
 
 				const result_count_text = computed(() => {
-					// A known file count (single lowercase word => exact trigram match) shows the file total before
-					// the scan finishes; otherwise it grows with the streamed results.
-					const files = known_file_count.value != null ? known_file_count.value : results.value.length
-					if (! files && ! results.value.length) return ''
+					const files = results.value.length
+					if (! files) return ''
 					const total_matches = results.value.reduce((sum, item) => sum + item.matches.length, 0)
 					return total_matches + ' match' + (total_matches === 1 ? '' : 'es') +
 						' in ' + files + ' file' + (files === 1 ? '' : 's') +
@@ -742,7 +739,6 @@
 						results.value = (message.results || []).map(r => markRaw(r))
 						const t_done = performance.now()
 						has_more.value = message.has_more
-						known_file_count.value = message.known_file_count ?? null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
 						loading.value = ! final
 						log(final ? 'final:' : 'partial:', results.value.length, 'files,', (performance.now() - t_search_sent).toFixed(1) + 'ms since sent', '| release', (t_assign - t_rel).toFixed(1) + 'ms assign', (t_done - t_assign).toFixed(1) + 'ms')
@@ -773,7 +769,6 @@
 							.filter(f => new_by_path.has(f.path))
 							.map(f => markRaw(new_by_path.get(f.path)))
 						has_more.value = message.has_more
-						known_file_count.value = null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
 						loading.value = false
 						selected.value = ! sel_id ? -1 : flat_rows.value.findIndex(r =>

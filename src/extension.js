@@ -295,6 +295,13 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			let paths = await indexer_client.find_candidate_paths(params.query, true, 1000, filter)
 			if (gen !== search_gen)
 				return
+			// A single all-lowercase word (>=3 chars) resolves to an exact trigram phrase lookup, so every
+			// candidate is guaranteed to contain the substring -> the final file count is known before the
+			// scan runs and can be shown immediately. Any space or uppercase letter breaks that guarantee.
+			let q = params.query.trim()
+			let known_file_count = q.length >= 3 && ! /\s/.test(q) && q === q.toLowerCase() ? paths.length : null
+			if (known_file_count !== null)
+				webview?.webview.postMessage({ type, phase: 'partial', query: params.query, has_more: false, results: [], known_file_count, workspace_folders })
 			let seq = indexer_client.next_search_seq()
 			let scanned = 0
 			let total_matches = 0
@@ -321,6 +328,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					query: params.query,
 					has_more,
 					results: all_results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+					known_file_count,
 					workspace_folders,
 				})
 				if (done)

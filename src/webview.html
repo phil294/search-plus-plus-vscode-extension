@@ -242,10 +242,7 @@
 				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_search_input" placeholder="e.g. *.test.js, dist/" autocomplete="off" />
 			</div>
 		</div>
-		<div v-if="loading || result_count_text" class="result-count">
-			<template v-if="loading"><i class="codicon codicon-loading codicon-modifier-spin"></i> Loading…<span v-if="results.length"> — {{ results.length }} file{{ results.length === 1 ? '' : 's' }}</span></template>
-			<template v-else>{{ result_count_text }}</template>
-		</div>
+		<div v-if="result_count_text" class="result-count">{{ result_count_text }}</div>
 		<div class="results-container" ref="results_container">
 			<div v-if="! results.length && search_query.trim() && ! loading" class="no-results">
 				No results found.
@@ -284,6 +281,7 @@
 				const results = ref([])
 				const has_more = ref(false)
 				const loading = ref(false)
+				const known_file_count = ref(null)
 				const workspace_folders = ref([])
 				const search_input = ref(null)
 				const results_container = ref(null)
@@ -299,16 +297,18 @@
 					const r = results.value
 					return r.length > file_limit.value ? r.slice(0, file_limit.value) : r
 				})
-				let search_debouncer = null
 				let t_search_sent = 0 // performance.now() when the current query was posted, for timing logs
 				let t_input = 0 // performance.now() of the most recent raw keystroke, to measure input->sent lag
 				let rendered_query = null // query string of the currently-displayed results; a change means a new search
 
 				const result_count_text = computed(() => {
-					if (! results.value.length) return ''
+					// A known file count (single lowercase word => exact trigram match) shows the file total before
+					// the scan finishes; otherwise it grows with the streamed results.
+					const files = known_file_count.value != null ? known_file_count.value : results.value.length
+					if (! files && ! results.value.length) return ''
 					const total_matches = results.value.reduce((sum, item) => sum + item.matches.length, 0)
 					return total_matches + ' match' + (total_matches === 1 ? '' : 'es') +
-						' in ' + results.value.length + ' file' + (results.value.length === 1 ? '' : 's') +
+						' in ' + files + ' file' + (files === 1 ? '' : 's') +
 						(has_more.value ? ' (truncated, please refine your search)' : '')
 				})
 
@@ -587,12 +587,10 @@
 				}
 				const on_search_input = () => {
 					t_input = performance.now()
-					clearTimeout(search_debouncer)
-					search_debouncer = setTimeout(do_search, 10)
+					do_search()
 				}
 				// Enter in the search box re-runs the search immediately to refresh stale results.
 				const trigger_search_now = () => {
-					clearTimeout(search_debouncer)
 					do_search()
 				}
 
@@ -705,6 +703,7 @@
 						const prev_collapsed = new Map(results.value.map(f => [f.path, f.collapsed]))
 						results.value = (message.results || []).map(r => ({ ...r, collapsed: prev_collapsed.get(r.path) || false }))
 						has_more.value = message.has_more
+						known_file_count.value = message.known_file_count ?? null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
 						loading.value = ! final
 						log(final ? 'final:' : 'partial:', results.value.length, 'files,', (performance.now() - t_search_sent).toFixed(1) + 'ms since sent')
@@ -734,6 +733,7 @@
 							.filter(f => new_by_path.has(f.path))
 							.map(f => ({ ...new_by_path.get(f.path), collapsed: f.collapsed }))
 						has_more.value = message.has_more
+						known_file_count.value = null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
 						loading.value = false
 						selected.value = ! sel_id ? -1 : flat_rows.value.findIndex(r =>

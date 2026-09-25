@@ -442,11 +442,6 @@ module.exports.Indexer = class {
 				let tl = performance.now()
 				let match_content = case_sensitive ? content : content.toLowerCase()
 				t_lower += performance.now() - tl
-				// Whole-file pre-filter: a line can only match if every word occurs somewhere in the file.
-				// indexOf over the whole string is far cheaper than splitting into lines and scanning each,
-				// so trigram candidates that don't actually contain the words are dropped without a split.
-				if (single_word !== null ? ! match_content.includes(single_word) : ! words_match.every(w => match_content.includes(w)))
-					continue
 				let tm = performance.now()
 				let match_lines = match_content.split('\n')
 				// Original-case lines are only needed to render the matched line previews.

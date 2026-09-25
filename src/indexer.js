@@ -405,82 +405,96 @@ module.exports.Indexer = class {
 		let t_read = 0
 		let t_decode = 0
 		let t_match = 0
-		let concurrency = 8
+		// Read-ahead pipeline: keep up to `read_ahead` reads in flight (parallel FS, disk stays busy)
+		// while scanning files one at a time. Reads run ahead of the scan cursor, but only the current
+		// file blocks a chunk, so a few large files still stream quickly. The budget is checked after each
+		// scanned file; on break the still-in-flight reads (<= read_ahead) are dropped and re-read next
+		// chunk (cheap: warm cache), and never decoded/scanned twice.
+		// Overlap reads with the single-threaded scan by keeping the libuv threadpool saturated. The pool is
+		// 4 by default and CANNOT be enlarged from a worker thread (UV_THREADPOOL_SIZE via the Worker env is
+		// ignored — the pool is process-global and already initialised by the host; verified empirically), so
+		// read_ahead=3 under-fed it. A wider read-ahead keeps all pool threads busy plus a small queue; the
+		// tiny first chunk stays shallow so a budget break drops (and re-reads) fewer in-flight files.
+		let read_ahead = time_budget_ms && time_budget_ms < 100 ? 4 : 8
 		let n = 0
-		for (; n < paths.length;) {
-			let batch = paths.slice(n, n + concurrency)
-			// On success the promise resolves to the Buffer; on failure it resolves to the Error itself
-			// (never rejects) so one unreadable file doesn't abort the whole batch.
+		let read_idx = 0
+		/** @type {Promise<Buffer|Error>[]} */
+		let inflight = []
+		// On success the promise resolves to the Buffer; on failure to the Error itself (never rejects) so
+		// one unreadable file doesn't abort the pipeline.
+		let fill_reads = () => {
+			while (inflight.length < read_ahead && read_idx < paths.length) {
+				inflight.push(readFile(/** @type {string} */ (paths[read_idx])).then(buf => buf, (/** @type {any} */ err) => err)) // eslint-disable-line no-extra-parens
+				read_idx++
+			}
+		}
+		fill_reads()
+		while (n < paths.length) {
 			let t0 = performance.now()
-			let buffers = await Promise.all(batch.map(p => readFile(p).then(buf => buf, (/** @type {any} */ err) => err)))
+			let buf = await /** @type {Promise<Buffer|Error>} */ (inflight.shift()) // eslint-disable-line no-extra-parens
 			t_read += performance.now() - t0
-			// Poll for cancellation after each batch (the await above already yielded to the event loop,
-			// so a newer search has had a chance to bump the sequence).
+			fill_reads()
+			// The await above yielded to the event loop, so a newer search has had a chance to bump the seq.
 			if (should_cancel && should_cancel()) {
 				log_debug(`scan cancelled after ${n} file(s), ${(performance.now() - start).toFixed(0)}ms`)
 				return { results, has_more: false, cancelled: true, scanned_count: n }
 			}
-			for (let j = 0; j < batch.length; j++) {
+			let file_path = /** @type {string} */ (paths[n]) // eslint-disable-line no-extra-parens
+			n++
+			if (! Buffer.isBuffer(buf)) {
+				// Read failed: the file may have been deleted/renamed/permission-changed since it was
+				// indexed (watcher events are debounced, so the index can briefly lag reality); this is
+				// routine, not exceptional, so it must not spam the error log.
+				let err = /** @type {any} */ (buf) // eslint-disable-line no-extra-parens
+				if (err && (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM'))
+					log_debug('skipping unreadable file for matches:', file_path, err.code)
+				else if (err)
+					log_error('Error reading file for matches:', file_path, err.message)
+				continue
+			}
+			let td = performance.now()
+			let content = buf.toString('utf8')
+			t_decode += performance.now() - td
+			let tm = performance.now()
+			let matches = []
+			// Walk matched lines in file order; derive each line number by counting the newlines between
+			// the previous match and this one (native indexOf, no per-line string allocation).
+			line_re.lastIndex = 0
+			let line_no = 1
+			let counted_to = 0
+			let m = line_re.exec(content)
+			while (m !== null) {
+				let idx = m.index
+				let p = content.indexOf('\n', counted_to)
+				while (p !== -1 && p < idx) {
+					line_no++
+					p = content.indexOf('\n', p + 1)
+				}
+				counted_to = idx
+				matches.push({
+					line_number: line_no,
+					line_text: line_preview(m[0], words_match, case_sensitive),
+				})
+				total_matches++
+				// A matched line is non-empty (the lookaheads require the words) so lastIndex has advanced;
+				// this only guards a degenerate empty-word regex from looping forever on a zero-length match.
+				if (line_re.lastIndex === idx)
+					line_re.lastIndex++
 				if (total_matches >= limit)
 					break
-				let file_path = /** @type {string} */ (batch[j]) // eslint-disable-line no-extra-parens
-				let buf = buffers[j]
-				if (! Buffer.isBuffer(buf)) {
-					// Read failed: the file may have been deleted/renamed/permission-changed since it was
-					// indexed (watcher events are debounced, so the index can briefly lag reality); this is
-					// routine, not exceptional, so it must not spam the error log.
-					let err = /** @type {any} */ (buf) // eslint-disable-line no-extra-parens
-					if (err && (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM'))
-						log_debug('skipping unreadable file for matches:', file_path, err.code)
-					else if (err)
-						log_error('Error reading file for matches:', file_path, err.message)
-					continue
-				}
-				let td = performance.now()
-				let content = buf.toString('utf8')
-				t_decode += performance.now() - td
-				let tm = performance.now()
-				let matches = []
-				// Walk matched lines in file order; derive each line number by counting the newlines between
-				// the previous match and this one (native indexOf, no per-line string allocation).
-				line_re.lastIndex = 0
-				let line_no = 1
-				let counted_to = 0
-				let m = line_re.exec(content)
-				while (m !== null) {
-					let idx = m.index
-					let p = content.indexOf('\n', counted_to)
-					while (p !== -1 && p < idx) {
-						line_no++
-						p = content.indexOf('\n', p + 1)
-					}
-					counted_to = idx
-					matches.push({
-						line_number: line_no,
-						line_text: line_preview(m[0], words_match, case_sensitive),
-					})
-					total_matches++
-					// A matched line is non-empty (the lookaheads require the words) so lastIndex has advanced;
-					// this only guards a degenerate empty-word regex from looping forever on a zero-length match.
-					if (line_re.lastIndex === idx)
-						line_re.lastIndex++
-					if (total_matches >= limit)
-						break
-					m = line_re.exec(content)
-				}
-				t_match += performance.now() - tm
-
-				if (matches.length > 0)
-					results.push({
-						path: String(file_path),
-						matches,
-					})
+				m = line_re.exec(content)
 			}
-			n += batch.length
+			t_match += performance.now() - tm
+
+			if (matches.length > 0)
+				results.push({
+					path: String(file_path),
+					matches,
+				})
+			// Stream once the match cap or the time budget is reached; the caller renders this chunk and
+			// calls again with the remaining paths (from scanned_count).
 			if (total_matches >= limit)
 				break
-			// Streaming: hand back what we have once the time budget is spent; the caller renders it and
-			// calls again with the remaining paths (from scanned_count) for the next, larger chunk.
 			if (time_budget_ms && performance.now() - start >= time_budget_ms)
 				break
 		}

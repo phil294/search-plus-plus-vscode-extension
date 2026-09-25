@@ -279,9 +279,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// repeat. The first chunks use a tiny budget so the first line appears almost immediately; once ~50
 	// results are on screen the budget grows so the remainder streams in fewer, larger chunks. Each posted
 	// set is a stable prefix of the next, so there is no placeholder skeleton and no layout shift.
-	let search_first_batch_files = 50 // cumulative results after which the chunk budget is widened
-	let search_first_chunk_ms = 51 // tiny budget for the first chunks (fast first paint)
-	let search_later_chunk_ms = 501 // wider budget once the first batch is on screen
+	let search_first_chunk_ms = 51 // tiny budget for the first chunk (fast first paint)
+	let search_later_chunk_ms = 501 // wider budget for every chunk after the first
 	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
@@ -297,11 +296,10 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				return
 			// A single all-lowercase word (>=3 chars) resolves to an exact trigram phrase lookup, so every
 			// candidate is guaranteed to contain the substring -> the final file count is known before the
-			// scan runs and can be shown immediately. Any space or uppercase letter breaks that guarantee.
+			// scan runs and is threaded into every chunk so the count shows from the first paint. Any space
+			// or uppercase letter breaks that guarantee.
 			let q = params.query.trim()
 			let known_file_count = q.length >= 3 && ! /\s/.test(q) && q === q.toLowerCase() ? paths.length : null
-			if (known_file_count !== null)
-				webview?.webview.postMessage({ type, phase: 'partial', query: params.query, has_more: false, results: [], known_file_count, workspace_folders })
 			let seq = indexer_client.next_search_seq()
 			let scanned = 0
 			let total_matches = 0
@@ -318,10 +316,11 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				total_matches += chunk.results.reduce((sum, f) => sum + f.matches.length, 0)
 				has_more = has_more || chunk.has_more
 				// Done when every candidate is scanned, the match cap is hit, or (defensive) a chunk made
-				// no progress. Widen the budget once the first batch of results is on screen.
+				// no progress.
 				let done = scanned >= paths.length || chunk.has_more || chunk.scanned_count === 0
-				if (all_results.length >= search_first_batch_files)
-					budget = search_later_chunk_ms
+				// Only the first chunk uses the tiny budget; the rest streams in one wide-budget chunk so the
+				// remainder isn't chopped into many round-trips (each of which re-reads dropped in-flight files).
+				budget = search_later_chunk_ms
 				webview?.webview.postMessage({
 					type,
 					phase: done ? 'lines' : 'partial',

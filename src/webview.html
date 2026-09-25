@@ -247,13 +247,17 @@
 			<div v-if="! results.length && search_query.trim() && ! loading" class="no-results">
 				No results found.
 			</div>
+			<!-- Keyed wrapper: a fresh query bumps results_key so Vue drops the entire old row subtree in ONE
+			     native removal (~15ms) instead of removeChild per row (100ms+); same-query streaming keeps the
+			     key so rows still diff/reuse incrementally. -->
+			<div class="results-list" :key="results_key">
 			<template v-for="(row, ri) in flat_rows" :key="row_key(row)">
 				<div v-if="row.kind === 'dir'" class="dir-header" :class="{ selected: selected === ri }" :style="{ paddingLeft: (row.depth * 12 + 4) + 'px' }" @click="toggle_dir(row.key)">
 					<i class="codicon icon-arrow" :class="dir_collapsed[row.key] ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
 					<span class="dir-name">{{ row.label }}</span>
 				</div>
 				<div v-else-if="row.kind === 'file'" class="file-header" :class="{ selected: selected === ri }" :style="{ paddingLeft: (row.depth * 12 + 4) + 'px' }" @click="toggle_file(row.fi)">
-					<i class="codicon icon-arrow" :class="results[row.fi].collapsed ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
+					<i class="codicon icon-arrow" :class="collapsed_files[results[row.fi].path] ? 'codicon-chevron-right' : 'codicon-chevron-down'"></i>
 					<img class="file-icon" :src="'img/file-icons/' + (results[row.fi].icon || 'default_file.svg')">
 					<span class="file-name">{{ get_file_name(results[row.fi].path) }}</span>
 					<span v-if="view_mode === 'list'" class="file-path">{{ get_dir_path(results[row.fi].path) }}</span>
@@ -264,11 +268,12 @@
 					<span class="line-text" :title="results[row.fi].matches[row.mi].line_text">{{ results[row.fi].matches[row.mi].line_text.trim() }}</span>
 				</div>
 			</template>
+			</div>
 		</div>
 	</div>
 
 	<script type="module">
-		import { createApp, ref, computed, onMounted, nextTick, watch } from 'vue'
+		import { createApp, ref, shallowRef, markRaw, computed, onMounted, nextTick, watch } from 'vue'
 		const vscode = acquireVsCodeApi()
 		// verbose timing logs -> extension output channel (only written when search++.verboseLogging is on)
 		const log = (...args) => vscode.postMessage({ type: 'log', args: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)) })
@@ -278,7 +283,17 @@
 				const include_query = ref(localStorage.getItem('search_include') || '')
 				const exclude_query = ref(localStorage.getItem('search_exclude') || '')
 				const show_filters = ref(localStorage.getItem('search_show_filters') === '1' || !! (include_query.value || exclude_query.value))
-				const results = ref([])
+				// Result file objects are markRaw'd (Vue never deep-proxies them or their match arrays), so `results`
+				// is a shallowRef: the render effect tracks only the array identity, not thousands of nested
+				// properties. This makes both mount and teardown near-native (a deep-reactive list of ~1000 matches
+				// cost 80-160ms to tear down; raw objects cost single-digit ms).
+				const results = shallowRef([])
+				// Collapse state lives here (keyed by path) instead of on the raw file objects, which can't be
+				// reactive. Persists across result swaps for free.
+				const collapsed_files = ref({})
+				// Bumped on every fresh query so the keyed .results-list wrapper is remounted -> the old subtree is
+				// torn down in one native removal instead of per-row.
+				const results_key = ref(0)
 				const has_more = ref(false)
 				const loading = ref(false)
 				const known_file_count = ref(null)
@@ -300,6 +315,10 @@
 				let t_search_sent = 0 // performance.now() when the current query was posted, for timing logs
 				let t_input = 0 // performance.now() of the most recent raw keystroke, to measure input->sent lag
 				let rendered_query = null // query string of the currently-displayed results; a change means a new search
+				// The Range objects currently registered as highlights. They are LIVE: the browser revalidates
+				// their boundaries on every DOM mutation, synchronously, while they reference a node. Held here so
+				// they can be repointed off the result rows before those rows are torn down (see release_highlights).
+				let active_ranges = []
 
 				const result_count_text = computed(() => {
 					// A known file count (single lowercase word => exact trigram match) shows the file total before
@@ -381,7 +400,7 @@
 					if (view_mode.value === 'list') {
 						displayed_results.value.forEach((file, fi) => {
 							rows.push({ kind: 'file', fi, depth: 0 })
-							if (! file.collapsed)
+							if (! collapsed_files.value[file.path])
 								file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi, mi, depth: 1 }))
 						})
 						return rows
@@ -395,7 +414,7 @@
 						for (const f of node.files) {
 							rows.push({ kind: 'file', fi: f.fi, depth })
 							const file = results.value[f.fi]
-							if (! file.collapsed)
+							if (! collapsed_files.value[file.path])
 								file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi: f.fi, mi, depth: depth + 1 }))
 						}
 					}
@@ -458,7 +477,7 @@
 				})
 				// Rendered rows map 1:1 to flat_rows (the no-results div is hidden while results exist).
 				const scroll_row_into_view = (idx, block = 'nearest') => nextTick().then(() => {
-					results_container.value?.children[idx]?.scrollIntoView({ block })
+					results_container.value?.querySelector('.results-list')?.children[idx]?.scrollIntoView({ block })
 				})
 
 				const move = (delta) => {
@@ -472,7 +491,8 @@
 				}
 
 				const toggle_file = (fi) => {
-					results.value[fi].collapsed = ! results.value[fi].collapsed
+					const p = results.value[fi].path
+					collapsed_files.value[p] = ! collapsed_files.value[p]
 				}
 
 				const open_match = (fi, mi) => {
@@ -499,7 +519,7 @@
 					if (row.kind === 'dir')
 						dir_collapsed.value[row.key] = val
 					else if (row.kind === 'file')
-						results.value[row.fi].collapsed = val
+						collapsed_files.value[results.value[row.fi].path] = val
 					else if (val) {
 						// left on a match: jump up to its file header
 						const rows = flat_rows.value
@@ -622,13 +642,24 @@
 					const relative_dir = parts.join('/')
 					return relative_dir ? `${workspace_folder.name} • ${relative_dir}` : workspace_folder.name
 				}
+				// Drop the current highlights AND detach their live Range objects from the result rows by
+				// repointing each to document.body. Clearing CSS.highlights alone only unregisters the overlay;
+				// the ranges stay live and keep costing a synchronous revalidation on every node removal during
+				// teardown (100ms+ for a modest list). Must run BEFORE results is reassigned.
+				const release_highlights = () => {
+					CSS.highlights?.clear()
+					for (const r of active_ranges) {
+						try { r.setStart(document.body, 0); r.collapse(true) } catch { /* node already gone */ }
+					}
+					active_ranges = []
+				}
 				const highlight_search_terms = () => {
 					if (! search_query.value.trim() || ! CSS.highlights) {
-						CSS.highlights?.clear()
+						release_highlights()
 						return
 					}
 					const t_hl = performance.now()
-					CSS.highlights.clear()
+					release_highlights()
 					const ranges = []
 					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive
 					const q = search_query.value.trim()
@@ -656,6 +687,7 @@
 					if (ranges.length > 0) {
 						const highlight = new Highlight(...ranges)
 						CSS.highlights.set('search-match', highlight)
+						active_ranges = ranges
 					}
 					log('highlight:', line_elements.length, 'line els,', ranges.length, 'ranges', (performance.now() - t_hl).toFixed(1) + 'ms')
 				}
@@ -691,6 +723,7 @@
 					if (message.type === 'results') {
 						const fresh = message.query !== rendered_query
 						rendered_query = message.query
+						if (fresh) results_key.value++
 						const final = message.phase === 'lines'
 						// Streamed in time-budgeted chunks; each message carries the cumulative results so far
 						// (a stable prefix -> no reorder). On a brand-new query (fresh) start clean (top, no
@@ -700,13 +733,19 @@
 						const sel = fresh ? null : capture_selection()
 						const container = results_container.value
 						const prev_scroll = fresh ? 0 : (container ? container.scrollTop : 0)
-						const prev_collapsed = new Map(results.value.map(f => [f.path, f.collapsed]))
-						results.value = (message.results || []).map(r => ({ ...r, collapsed: prev_collapsed.get(r.path) || false }))
+						// Detach the live highlight ranges from the old rows BEFORE they are torn down: a live Range
+						// still pointing into a .line-text node forces a synchronous revalidation on every node removal
+						// (100ms+ teardowns for a modest list). Repointed to body here, then rebuilt post-render.
+						const t_rel = performance.now()
+						release_highlights()
+						const t_assign = performance.now()
+						results.value = (message.results || []).map(r => markRaw(r))
+						const t_done = performance.now()
 						has_more.value = message.has_more
 						known_file_count.value = message.known_file_count ?? null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
 						loading.value = ! final
-						log(final ? 'final:' : 'partial:', results.value.length, 'files,', (performance.now() - t_search_sent).toFixed(1) + 'ms since sent')
+						log(final ? 'final:' : 'partial:', results.value.length, 'files,', (performance.now() - t_search_sent).toFixed(1) + 'ms since sent', '| release', (t_assign - t_rel).toFixed(1) + 'ms assign', (t_done - t_assign).toFixed(1) + 'ms')
 						if (sel) file_limit.value = Infinity // need the full list to locate & keep the selection
 						restore_selection(sel)
 						if (selected.value !== -1) {
@@ -729,9 +768,10 @@
 								: { path: results.value[sel_row.fi].path, line: results.value[sel_row.fi].matches[sel_row.mi]?.line_number }
 						const container = results_container.value
 						const prev_scroll = container ? container.scrollTop : 0
+						release_highlights()
 						results.value = results.value
 							.filter(f => new_by_path.has(f.path))
-							.map(f => ({ ...new_by_path.get(f.path), collapsed: f.collapsed }))
+							.map(f => markRaw(new_by_path.get(f.path)))
 						has_more.value = message.has_more
 						known_file_count.value = null
 						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
@@ -753,7 +793,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, toggle_dir, row_key, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

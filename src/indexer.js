@@ -386,22 +386,24 @@ module.exports.Indexer = class {
 	 * again with the remaining paths for the next chunk. */
 	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel, /** @type {number=} */ time_budget_ms) {
 		let start = performance.now()
-		// TODO: ?? regex
 		// Case pseudo-sensitivity: any uppercase letter in the query switches the whole match to
 		// case-sensitive. The FTS candidate lookup is always case-insensitive, so this is a post-filter
 		// and may yield fewer than `limit` results when the candidate cap already dropped exact-case hits.
 		let case_sensitive = word.toLowerCase() !== word
-		let words = word.split(/\s+/)
+		let words = word.split(/\s+/).filter(Boolean)
 		let words_match = case_sensitive ? words : words.map(w => w.toLowerCase())
-		let single_word = words_match.length === 1 ? /** @type {string} */ (words_match[0]) : null // eslint-disable-line no-extra-parens
+		// One regex matches a whole line that contains every word (any order): a lookahead per word asserts
+		// the word occurs within the line, then `[^\n]*` captures the original-case line for the preview.
+		// `m` anchors ^/$ to line boundaries and `i` folds case IN PLACE, so we never allocate a lowercased
+		// copy of the file nor split it into a per-line array.
+		let line_re = new RegExp('^' + words.map(w => '(?=[^\\n]*' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')').join('') + '[^\\n]*$', case_sensitive ? 'gm' : 'gim')
 
 		let results = []
 		let total_matches = 0
 		// Timing breakdown to locate the scan bottleneck: parallel-read wall time vs the serial CPU
-		// stages (utf-8 decode, whole-file lowercase+split, and line matching).
+		// stages (utf-8 decode and the in-place regex line scan).
 		let t_read = 0
 		let t_decode = 0
-		let t_lower = 0
 		let t_match = 0
 		let concurrency = 8
 		let n = 0
@@ -437,31 +439,34 @@ module.exports.Indexer = class {
 				let td = performance.now()
 				let content = buf.toString('utf8')
 				t_decode += performance.now() - td
-				// Case-insensitive matching folds case once for the whole file (one native pass beats
-				// thousands of per-line toLowerCase() calls/allocations).
-				let tl = performance.now()
-				let match_content = case_sensitive ? content : content.toLowerCase()
-				t_lower += performance.now() - tl
 				let tm = performance.now()
-				let match_lines = match_content.split('\n')
-				// Original-case lines are only needed to render the matched line previews.
-				let lines = case_sensitive ? match_lines : content.split('\n')
 				let matches = []
-				for (let i = 0; i < match_lines.length; i++) {
-					let line = match_lines[i]
-					if (! line)
-						continue
-
-					// Check if all words are in this line (fast path for the common single-token query)
-					if (single_word !== null ? line.includes(single_word) : words_match.every(w => line.includes(w))) {
-						matches.push({
-							line_number: i + 1,
-							line_text: line_preview(lines[i] || '', words_match, case_sensitive),
-						})
-						total_matches++
-						if (total_matches >= limit)
-							break
+				// Walk matched lines in file order; derive each line number by counting the newlines between
+				// the previous match and this one (native indexOf, no per-line string allocation).
+				line_re.lastIndex = 0
+				let line_no = 1
+				let counted_to = 0
+				let m = line_re.exec(content)
+				while (m !== null) {
+					let idx = m.index
+					let p = content.indexOf('\n', counted_to)
+					while (p !== -1 && p < idx) {
+						line_no++
+						p = content.indexOf('\n', p + 1)
 					}
+					counted_to = idx
+					matches.push({
+						line_number: line_no,
+						line_text: line_preview(m[0], words_match, case_sensitive),
+					})
+					total_matches++
+					// A matched line is non-empty (the lookaheads require the words) so lastIndex has advanced;
+					// this only guards a degenerate empty-word regex from looping forever on a zero-length match.
+					if (line_re.lastIndex === idx)
+						line_re.lastIndex++
+					if (total_matches >= limit)
+						break
+					m = line_re.exec(content)
 				}
 				t_match += performance.now() - tm
 
@@ -480,7 +485,7 @@ module.exports.Indexer = class {
 				break
 		}
 
-		log_debug(`scan time: ${(performance.now() - start).toFixed(0)}ms (read ${t_read.toFixed(0)} decode ${t_decode.toFixed(0)} lower ${t_lower.toFixed(0)} match ${t_match.toFixed(0)}), ${results.length} files with matches, ${total_matches} total matches`)
+		log_debug(`scan time: ${(performance.now() - start).toFixed(0)}ms (read ${t_read.toFixed(0)} decode ${t_decode.toFixed(0)} match ${t_match.toFixed(0)}), ${results.length} files with matches, ${total_matches} total matches`)
 		return { results, has_more: total_matches >= limit, scanned_count: n }
 	}
 

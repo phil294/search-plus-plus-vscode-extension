@@ -395,7 +395,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				}))
 				// Phase 2: resolve the matching line numbers (may expand to several entries per file).
 				let t_lines = Date.now()
-				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000, indexer_client.next_search_seq())
+				let { results } = await indexer_client.find_lines_for_paths(paths, query, 2000, indexer_client.next_search_seq(), undefined)
 				if (my_token !== workspace_token)
 					return
 				let lines_ms = Date.now() - t_lines

@@ -1,5 +1,7 @@
 let path = require('path')
-const { mkdirSync, existsSync, rmSync, readFileSync } = require('fs')
+const { mkdirSync, existsSync, rmSync } = require('fs')
+const { readFile } = require('fs/promises')
+const { performance } = require('perf_hooks')
 const micromatch = require('micromatch')
 const { log_debug, log_info, log_error, log_warn } = require('./log')
 const { word_split_regex } = require('./global')
@@ -376,11 +378,14 @@ module.exports.Indexer = class {
 	}
 
 	/** Second phase: open the given candidate files and collect the matching lines. Kept separate from
-	 * find_candidate_paths so a caller can render file names first, then fill in line numbers.
-	 * `should_cancel`, when given, is polled every so often (between yields to the event loop) so a
-	 * superseded scan can be abandoned instead of running to completion on slow disks. */
-	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel) {
-		let start = Date.now()
+	 * find_candidate_paths so a caller can stream results. Files are read in small parallel batches so
+	 * several disk reads overlap on libuv's threadpool instead of blocking one file at a time.
+	 * `should_cancel`, when given, is polled after each batch so a superseded scan can be abandoned
+	 * instead of running to completion. `time_budget_ms`, when given, returns the results gathered so far
+	 * once that wall-time is spent (along with scanned_count) so the caller can render a chunk and call
+	 * again with the remaining paths for the next chunk. */
+	async find_lines_for_paths(/** @type {string[]} */ paths, /** @type {string} */ word, /** @type {number} */ limit, /** @type {(() => boolean)=} */ should_cancel, /** @type {number=} */ time_budget_ms) {
+		let start = performance.now()
 		// TODO: ?? regex
 		// Case pseudo-sensitivity: any uppercase letter in the query switches the whole match to
 		// case-sensitive. The FTS candidate lookup is always case-insensitive, so this is a post-filter
@@ -388,31 +393,65 @@ module.exports.Indexer = class {
 		let case_sensitive = word.toLowerCase() !== word
 		let words = word.split(/\s+/)
 		let words_match = case_sensitive ? words : words.map(w => w.toLowerCase())
+		let single_word = words_match.length === 1 ? /** @type {string} */ (words_match[0]) : null // eslint-disable-line no-extra-parens
 
 		let results = []
 		let total_matches = 0
-
-		for (let n = 0; n < paths.length; n++) {
-			// Yield to the event loop after every file so the worker can pick up a newer search and this
-			// (superseded) scan can bail at once. A single file can be up to maxIndexSizeMb (default 20MB),
-			// so checking only every N files could read hundreds of MB on a slow/spinning disk first.
-			if (should_cancel && n > 0) {
-				await new Promise(resolve => setImmediate(resolve))
-				if (should_cancel()) {
-					log_debug(`scan cancelled after ${n} file(s), ${Date.now() - start}ms`)
-					return { results, has_more: false, cancelled: true }
-				}
+		// Timing breakdown to locate the scan bottleneck: parallel-read wall time vs the serial CPU
+		// stages (utf-8 decode, whole-file lowercase+split, and line matching).
+		let t_read = 0
+		let t_decode = 0
+		let t_lower = 0
+		let t_match = 0
+		let concurrency = 8
+		let n = 0
+		for (; n < paths.length;) {
+			let batch = paths.slice(n, n + concurrency)
+			// On success the promise resolves to the Buffer; on failure it resolves to the Error itself
+			// (never rejects) so one unreadable file doesn't abort the whole batch.
+			let t0 = performance.now()
+			let buffers = await Promise.all(batch.map(p => readFile(p).then(buf => buf, (/** @type {any} */ err) => err)))
+			t_read += performance.now() - t0
+			// Poll for cancellation after each batch (the await above already yielded to the event loop,
+			// so a newer search has had a chance to bump the sequence).
+			if (should_cancel && should_cancel()) {
+				log_debug(`scan cancelled after ${n} file(s), ${(performance.now() - start).toFixed(0)}ms`)
+				return { results, has_more: false, cancelled: true, scanned_count: n }
 			}
-			let file_path = /** @type {string} */ (paths[n]) // eslint-disable-line no-extra-parens
-			try {
-				let content = readFileSync(file_path, 'utf-8')
-				let lines = content.split('\n')
-				// Match against the original text when case-sensitive; otherwise lowercase the whole file
-				// once (one native pass beats thousands of per-line toLowerCase() calls/allocations).
-				let match_lines = case_sensitive ? lines : content.toLowerCase().split('\n')
+			for (let j = 0; j < batch.length; j++) {
+				if (total_matches >= limit)
+					break
+				let file_path = /** @type {string} */ (batch[j]) // eslint-disable-line no-extra-parens
+				let buf = buffers[j]
+				if (! Buffer.isBuffer(buf)) {
+					// Read failed: the file may have been deleted/renamed/permission-changed since it was
+					// indexed (watcher events are debounced, so the index can briefly lag reality); this is
+					// routine, not exceptional, so it must not spam the error log.
+					let err = /** @type {any} */ (buf) // eslint-disable-line no-extra-parens
+					if (err && (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM'))
+						log_debug('skipping unreadable file for matches:', file_path, err.code)
+					else if (err)
+						log_error('Error reading file for matches:', file_path, err.message)
+					continue
+				}
+				let td = performance.now()
+				let content = buf.toString('utf8')
+				t_decode += performance.now() - td
+				// Case-insensitive matching folds case once for the whole file (one native pass beats
+				// thousands of per-line toLowerCase() calls/allocations).
+				let tl = performance.now()
+				let match_content = case_sensitive ? content : content.toLowerCase()
+				t_lower += performance.now() - tl
+				// Whole-file pre-filter: a line can only match if every word occurs somewhere in the file.
+				// indexOf over the whole string is far cheaper than splitting into lines and scanning each,
+				// so trigram candidates that don't actually contain the words are dropped without a split.
+				if (single_word !== null ? ! match_content.includes(single_word) : ! words_match.every(w => match_content.includes(w)))
+					continue
+				let tm = performance.now()
+				let match_lines = match_content.split('\n')
+				// Original-case lines are only needed to render the matched line previews.
+				let lines = case_sensitive ? match_lines : content.split('\n')
 				let matches = []
-				let single_word = words_match.length === 1 ? /** @type {string} */ (words_match[0]) : null // eslint-disable-line no-extra-parens
-
 				for (let i = 0; i < match_lines.length; i++) {
 					let line = match_lines[i]
 					if (! line)
@@ -429,34 +468,32 @@ module.exports.Indexer = class {
 							break
 					}
 				}
+				t_match += performance.now() - tm
 
 				if (matches.length > 0)
 					results.push({
 						path: String(file_path),
 						matches,
 					})
-				if (total_matches >= limit)
-					break
-			} catch (err) {
-				// The file may have been deleted/renamed/permission-changed since it was indexed
-				// (watcher events are debounced, so the index can briefly lag reality); this is
-				// routine, not exceptional, so it must not spam the error log.
-				if (err.code === 'ENOENT' || err.code === 'EACCES' || err.code === 'EISDIR' || err.code === 'EPERM')
-					log_debug('skipping unreadable file for matches:', file_path, err.code)
-				else
-					log_error('Error reading file for matches:', file_path, err.message)
 			}
+			n += batch.length
+			if (total_matches >= limit)
+				break
+			// Streaming: hand back what we have once the time budget is spent; the caller renders it and
+			// calls again with the remaining paths (from scanned_count) for the next, larger chunk.
+			if (time_budget_ms && performance.now() - start >= time_budget_ms)
+				break
 		}
 
-		log_debug(`scan time: ${Date.now() - start}ms, ${results.length} files with matches, ${total_matches} total matches`)
-		return { results, has_more: total_matches >= limit }
+		log_debug(`scan time: ${(performance.now() - start).toFixed(0)}ms (read ${t_read.toFixed(0)} decode ${t_decode.toFixed(0)} lower ${t_lower.toFixed(0)} match ${t_match.toFixed(0)}), ${results.length} files with matches, ${total_matches} total matches`)
+		return { results, has_more: total_matches >= limit, scanned_count: n }
 	}
 
 	/** Convenience: run both phases in one go (candidate paths + line scan). */
 	find_paths_with_lines_by_word(/** @type {string} */ word, /** @type {boolean} */ is_partial_trigram_query, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
 		log_debug('find paths with lines by word starts for', word, 'is_partial_trigram_query:', is_partial_trigram_query)
 		let paths = this.find_candidate_paths(word, is_partial_trigram_query, limit, filter)
-		return this.find_lines_for_paths(paths, word, limit, undefined)
+		return this.find_lines_for_paths(paths, word, limit, undefined, undefined)
 	}
 }
 

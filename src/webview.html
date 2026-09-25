@@ -273,6 +273,8 @@
 	<script type="module">
 		import { createApp, ref, computed, onMounted, nextTick, watch } from 'vue'
 		const vscode = acquireVsCodeApi()
+		// verbose timing logs -> extension output channel (only written when search++.verboseLogging is on)
+		const log = (...args) => vscode.postMessage({ type: 'log', args: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)) })
 		createApp({
 			setup() {
 				const search_query = ref(localStorage.getItem('search_query') || '')
@@ -286,7 +288,21 @@
 				const search_input = ref(null)
 				const results_container = ref(null)
 				const selected = ref(-1)
+				// Process only this many result FILES on the first paint of a large result set; the rest follow a
+				// macrotask later (see reveal()). The real cost is the tree/flat_rows computed (and Vue lazily
+				// proxying each file/match) over the whole set, not the DOM node count — so we cap the DATA that
+				// feeds them, not just the rendered rows.
+				const INITIAL_FILES = 50
+				const file_limit = ref(Infinity)
+				// The files the tree/flat_rows actually process; a prefix slice keeps fi indices valid into results.
+				const displayed_results = computed(() => {
+					const r = results.value
+					return r.length > file_limit.value ? r.slice(0, file_limit.value) : r
+				})
 				let search_debouncer = null
+				let t_search_sent = 0 // performance.now() when the current query was posted, for timing logs
+				let t_input = 0 // performance.now() of the most recent raw keystroke, to measure input->sent lag
+				let rendered_query = null // query string of the currently-displayed results; a change means a new search
 
 				const result_count_text = computed(() => {
 					if (! results.value.length) return ''
@@ -329,7 +345,7 @@
 				// the full path from the root (stable, used for collapse state), `label` the display text.
 				const tree = computed(() => {
 					const root = { dirs: {}, files: [], key: '', label: '' }
-					results.value.forEach((file, fi) => {
+					displayed_results.value.forEach((file, fi) => {
 						let curr = root
 						let acc = ''
 						for (const seg of path_segments(file.path)) {
@@ -363,7 +379,7 @@
 				const flat_rows = computed(() => {
 					const rows = []
 					if (view_mode.value === 'list') {
-						results.value.forEach((file, fi) => {
+						displayed_results.value.forEach((file, fi) => {
 							rows.push({ kind: 'file', fi, depth: 0 })
 							if (! file.collapsed)
 								file.matches.forEach((match, mi) => rows.push({ kind: 'match', fi, mi, depth: 1 }))
@@ -386,6 +402,41 @@
 					walk(tree.value, 0)
 					return rows
 				})
+
+				// Paint a large result set in two steps: a small first batch immediately, then the rest after a
+				// macrotask so the first batch actually paints AND any already-queued newer message (e.g. phase-2
+				// resolved lines arriving right after phase-1 candidates) gets processed first — that newer
+				// message cancels this pending expand, so a superseded set never pays for a full render.
+				let pending_reveal = null
+				const reveal = (label, on_first_paint, on_full) => {
+					if (pending_reveal) { clearTimeout(pending_reveal); pending_reveal = null }
+					const total = results.value.length
+					if (total > INITIAL_FILES) {
+						const t0 = performance.now()
+						file_limit.value = INITIAL_FILES
+						nextTick().then(() => {
+							log(label + ': first', INITIAL_FILES, 'of', total, 'files patched', (performance.now() - t0).toFixed(1) + 'ms')
+							if (on_first_paint) on_first_paint()
+						})
+						pending_reveal = setTimeout(() => {
+							pending_reveal = null
+							const t1 = performance.now()
+							file_limit.value = Infinity
+							nextTick().then(() => {
+								log(label + ': full', total, 'files patched', (performance.now() - t1).toFixed(1) + 'ms')
+								if (on_full) on_full()
+							})
+						}, 0)
+					} else {
+						const t0 = performance.now()
+						file_limit.value = Infinity
+						nextTick().then(() => {
+							log(label + ':', total, 'files patched', (performance.now() - t0).toFixed(1) + 'ms')
+							if (on_first_paint) on_first_paint()
+							if (on_full) on_full()
+						})
+					}
+				}
 
 				const row_key = (row) =>
 					row.kind === 'dir' ? 'd:' + row.key
@@ -525,6 +576,8 @@
 					localStorage.setItem('search_include', include_query.value)
 					localStorage.setItem('search_exclude', exclude_query.value)
 					loading.value = !! search_query.value.trim()
+					t_search_sent = performance.now()
+					log('search sent:', search_query.value, t_input ? '(' + (t_search_sent - t_input).toFixed(1) + 'ms input->sent)' : '')
 					vscode.postMessage({
 						type: 'search',
 						query: search_query.value,
@@ -533,6 +586,7 @@
 					})
 				}
 				const on_search_input = () => {
+					t_input = performance.now()
 					clearTimeout(search_debouncer)
 					search_debouncer = setTimeout(do_search, 10)
 				}
@@ -575,6 +629,7 @@
 						CSS.highlights?.clear()
 						return
 					}
+					const t_hl = performance.now()
 					CSS.highlights.clear()
 					const ranges = []
 					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive
@@ -604,6 +659,7 @@
 						const highlight = new Highlight(...ranges)
 						CSS.highlights.set('search-match', highlight)
 					}
+					log('highlight:', line_elements.length, 'line els,', ranges.length, 'ranges', (performance.now() - t_hl).toFixed(1) + 'ms')
 				}
 				// Capture the current selection as a stable identity (path + line) so it can be restored
 				// after the results array is swapped (e.g. placeholder -> resolved line numbers).
@@ -635,38 +691,33 @@
 				window.addEventListener('message', (event) => {
 					const message = event.data
 					if (message.type === 'results') {
-						if (message.phase === 'paths') {
-							// Phase 1: candidate file names, each with the query text as a placeholder line.
-							results.value = (message.results || []).map(r => ({ ...r, collapsed: false }))
-							has_more.value = false
-							if (message.workspace_folders) workspace_folders.value = message.workspace_folders
-							selected.value = -1
-							loading.value = true
-							const container = results_container.value
-							nextTick().then(() => { if (container) container.scrollTop = 0; highlight_search_terms() })
-						} else {
-							// Phase 2 (resolved lines) or empty final: keep selection (by path) and scroll
-							// across the placeholder -> real swap.
-							const sel = capture_selection()
-							const container = results_container.value
-							const prev_scroll = container ? container.scrollTop : 0
-							const prev_collapsed = new Map(results.value.map(f => [f.path, f.collapsed]))
-							results.value = (message.results || []).map(r => ({ ...r, collapsed: prev_collapsed.get(r.path) || false }))
-							has_more.value = message.has_more
-							if (message.workspace_folders) workspace_folders.value = message.workspace_folders
-							loading.value = false
-							restore_selection(sel)
-							// If a selection survived the swap, keep it visible (its row may have moved when
-							// placeholder lines became real matches); align the file-name row of the selected
-							// match to the top so the file context shows. Otherwise preserve the scroll position.
-							if (selected.value !== -1) {
-								const row = flat_rows.value[selected.value]
-								const parent = row?.kind === 'match' ? flat_rows.value.findIndex(r => r.kind === 'file' && r.fi === row.fi) : -1
-								scroll_row_into_view(parent === -1 ? selected.value : parent, 'start')
-							} else
-								nextTick().then(() => { if (container) container.scrollTop = prev_scroll })
+						const fresh = message.query !== rendered_query
+						rendered_query = message.query
+						const final = message.phase === 'lines'
+						// Streamed in time-budgeted chunks; each message carries the cumulative results so far
+						// (a stable prefix -> no reorder). On a brand-new query (fresh) start clean (top, no
+						// selection); on continuations of the same query keep scroll/selection/collapse state.
+						// loading stays on until the final ('lines') chunk arrives.
+						if (pending_reveal) { clearTimeout(pending_reveal); pending_reveal = null }
+						const sel = fresh ? null : capture_selection()
+						const container = results_container.value
+						const prev_scroll = fresh ? 0 : (container ? container.scrollTop : 0)
+						const prev_collapsed = new Map(results.value.map(f => [f.path, f.collapsed]))
+						results.value = (message.results || []).map(r => ({ ...r, collapsed: prev_collapsed.get(r.path) || false }))
+						has_more.value = message.has_more
+						if (message.workspace_folders) workspace_folders.value = message.workspace_folders
+						loading.value = ! final
+						log(final ? 'final:' : 'partial:', results.value.length, 'files,', (performance.now() - t_search_sent).toFixed(1) + 'ms since sent')
+						if (sel) file_limit.value = Infinity // need the full list to locate & keep the selection
+						restore_selection(sel)
+						if (selected.value !== -1) {
+							file_limit.value = Infinity // need the whole list in the DOM to scroll to the selected row
+							const row = flat_rows.value[selected.value]
+							const parent = row?.kind === 'match' ? flat_rows.value.findIndex(r => r.kind === 'file' && r.fi === row.fi) : -1
+							scroll_row_into_view(parent === -1 ? selected.value : parent, 'start')
 							nextTick().then(highlight_search_terms)
-						}
+						} else
+							reveal(final ? 'final' : 'partial', () => { if (container) container.scrollTop = prev_scroll }, highlight_search_terms)
 					} else if (message.type === 'results_live') {
 						// In-place update after the index changed: drop files that no longer match and
 						// refresh the matches of already-shown files (never add new file entries), keeping
@@ -689,10 +740,7 @@
 							sel_id.line == null
 								? r.kind === 'file' && results.value[r.fi].path === sel_id.path
 								: r.kind === 'match' && results.value[r.fi].path === sel_id.path && results.value[r.fi].matches[r.mi]?.line_number === sel_id.line)
-						nextTick().then(() => {
-							if (container) container.scrollTop = prev_scroll
-							highlight_search_terms()
-						})
+						reveal('live', () => { if (container) container.scrollTop = prev_scroll }, highlight_search_terms)
 					} else if (message.type === 'nav') {
 						nav(message.direction)
 					} else if (message.type === 'focus_search') {

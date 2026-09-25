@@ -272,8 +272,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	context.subscriptions.push(match_highlight_decoration)
 	// Runs the current search and posts the outcome. `type` is 'results' for a fresh search (webview
 	// replaces its list) or 'results_live' for an in-place update after the index changed. A fresh
-	// search is streamed in two phases: the candidate file names first (fast, each shown with the query
-	// text as a placeholder line), then the resolved line numbers once the files have been scanned.
+	// search is STREAMED in time-budgeted chunks: scan candidate files until a small wall-time budget is
+	// spent, post the results gathered so far (rendered at once, with real line numbers), then resume and
+	// repeat. The first chunks use a tiny budget so the first line appears almost immediately; once ~50
+	// results are on screen the budget grows so the remainder streams in fewer, larger chunks. Each posted
+	// set is a stable prefix of the next, so there is no placeholder skeleton and no layout shift.
+	let search_first_batch_files = 50 // cumulative results after which the chunk budget is widened
+	let search_first_chunk_ms = 51 // tiny budget for the first chunks (fast first paint)
+	let search_later_chunk_ms = 501 // wider budget once the first batch is on screen
 	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
@@ -287,23 +293,37 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			let paths = await indexer_client.find_candidate_paths(params.query, true, 1000, filter)
 			if (gen !== search_gen)
 				return
-			webview?.webview.postMessage({
-				type,
-				phase: 'paths',
-				has_more: false,
-				results: paths.map(path => ({ path, icon: icon_file_name(path), matches: [{ line_number: 1, line_text: params.query, placeholder: true }] })),
-				workspace_folders,
-			})
-			let found = await indexer_client.find_lines_for_paths(paths, params.query, 1000, indexer_client.next_search_seq())
-			if (gen !== search_gen)
-				return
-			webview?.webview.postMessage({
-				type,
-				phase: 'lines',
-				...found,
-				results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
-				workspace_folders,
-			})
+			let seq = indexer_client.next_search_seq()
+			let scanned = 0
+			let total_matches = 0
+			let has_more = false
+			/** @type {{path:string, matches:{line_number:number, line_text:string}[]}[]} */
+			let all_results = []
+			let budget = search_first_chunk_ms
+			for (;;) {
+				let chunk = await indexer_client.find_lines_for_paths(paths.slice(scanned), params.query, 1000 - total_matches, seq, budget)
+				if (gen !== search_gen)
+					return
+				scanned += chunk.scanned_count
+				all_results = all_results.concat(chunk.results)
+				total_matches += chunk.results.reduce((sum, f) => sum + f.matches.length, 0)
+				has_more = has_more || chunk.has_more
+				// Done when every candidate is scanned, the match cap is hit, or (defensive) a chunk made
+				// no progress. Widen the budget once the first batch of results is on screen.
+				let done = scanned >= paths.length || chunk.has_more || chunk.scanned_count === 0
+				if (all_results.length >= search_first_batch_files)
+					budget = search_later_chunk_ms
+				webview?.webview.postMessage({
+					type,
+					phase: done ? 'lines' : 'partial',
+					query: params.query,
+					has_more,
+					results: all_results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+					workspace_folders,
+				})
+				if (done)
+					return
+			}
 		} else {
 			let found = await indexer_client.find_paths_with_lines_by_word(params.query, true, 1000, filter)
 			if (gen !== search_gen)
@@ -341,11 +361,13 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					last_search = { query: message.query, include: message.include, exclude: message.exclude }
 					if (! message.query?.trim()) {
 						search_gen++ // cancel any in-flight phase-2 from a previous query
-						return webview?.webview.postMessage({ type: 'results', phase: 'lines', results: [], has_more: false, workspace_folders: [] })
+						return webview?.webview.postMessage({ type: 'results', phase: 'lines', query: message.query || '', results: [], has_more: false, workspace_folders: [] })
 					}
 					await run_search(last_search, 'results')
 				} else if (message.type === 'has_results')
 					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)
+				else if (message.type === 'log')
+					log_debug('[webview]', ...message.args || [])
 				else if (message.type === 'open_file') {
 					let uri = vscode.Uri.file(message.path)
 					let editor = await vscode.window.showTextDocument(uri)

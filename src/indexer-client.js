@@ -110,8 +110,8 @@ class IndexerClient {
 		return ++this._search_seq
 	}
 
-	find_lines_for_paths(/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit, /** @type {number=} */ seq) {
-		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean, cancelled?:boolean}>} */ (this.call('find_lines_for_paths', paths, word, limit, seq)) // eslint-disable-line no-extra-parens
+	find_lines_for_paths(/** @type string[] */ paths, /** @type string */ word, /** @type number */ limit, /** @type {number=} */ seq, /** @type {number=} */ time_budget_ms) {
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean, cancelled?:boolean, scanned_count:number}>} */ (this.call('find_lines_for_paths', paths, word, limit, seq, time_budget_ms)) // eslint-disable-line no-extra-parens
 	}
 
 	find_paths_with_lines_by_word(/** @type string */ word, /** @type boolean */ is_partial, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {

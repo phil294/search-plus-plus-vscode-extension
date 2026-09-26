@@ -1,5 +1,5 @@
 let vscode = require('vscode')
-let { debounce } = require('./util')
+let { debounce, sleep } = require('./util')
 const { isMatch } = require('micromatch')
 const { stat } = require('fs/promises')
 const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log')
@@ -143,11 +143,25 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		log_debug('stat files...')
 		name_only_paths = new Set(new_files.filter(f => ! f.index_content).map(f => f.uri.path))
 		indexed_paths = new Set(new_files.filter(f => f.index_content).map(f => f.uri.path))
-		let new_file_metas = (await Promise.all(new_files
-			// TODO: this is the bottleneck for very large repos. how to speed up?
-			// TODO in chunks, not all at the same time (?)
-			.map(f => uri_to_file_meta(f.uri, f.index_content).catch(() => null)))) // file may vanish between listing and stat
-			.filter((/** @type {FileMeta?} */ m) => !! m)
+		// Stat in bounded chunks with periodic yields, so the extension-HOST event loop stays responsive
+		// (file watcher, other extensions) instead of being starved while ~250k stat completions drain
+		// back-to-back. libuv only runs a few stats at once regardless, so capping in-flight work costs no
+		// throughput. Time-based yield mirrors the indexer's disk-yield.
+		/** @type {FileMeta[]} */
+		let new_file_metas = []
+		const stat_chunk_size = 1000
+		let last_stat_pause = Date.now()
+		for (let i = 0; i < new_files.length; i += stat_chunk_size) {
+			let metas = await Promise.all(new_files.slice(i, i + stat_chunk_size)
+				.map(f => uri_to_file_meta(f.uri, f.index_content).catch(() => null))) // file may vanish between listing and stat
+			for (let m of metas)
+				if (m)
+					new_file_metas.push(m)
+			if (Date.now() - last_stat_pause > 90) {
+				await sleep(5)
+				last_stat_pause = Date.now()
+			}
+		}
 
 		status_bar_item_command.text = ''
 		log_debug(`scanning took ${(Date.now() - start) / 1000} seconds`)

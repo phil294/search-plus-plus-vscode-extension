@@ -1,3 +1,4 @@
+// @ts-nocheck
 // The code below is taken from https://github.com/bevry/istextorbinary,
 // Copyright Benjamin Lupton,
 // and licensed under Artistic License 2.0, attached below.

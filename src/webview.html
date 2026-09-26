@@ -225,7 +225,7 @@
 	<div id="app">
 		<div class="search-container">
 			<div class="input-row">
-				<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" placeholder="Search..." autocomplete="off" ref="search_input" />
+				<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" ref="search_input" />
 				<button class="toggle-filters" :class="{ active: show_filters }" @click="show_filters = ! show_filters" title="Toggle Search Details">
 					<i class="codicon codicon-ellipsis"></i>
 				</button>
@@ -556,12 +556,13 @@
 					switch (e.key) {
 						case 'ArrowDown':
 							e.preventDefault()
-							move(1)
+							if (in_search) history_next()
+							else move(1)
 							break
 						case 'ArrowUp':
-							if (in_search) break
 							e.preventDefault()
-							move(-1)
+							if (in_search) history_prev()
+							else move(-1)
 							break
 						case 'Enter':
 							e.preventDefault()
@@ -602,12 +603,62 @@
 						exclude: exclude_query.value,
 					})
 				}
+				// Last 100 search queries (most-recent first), navigated with Up/Down in the search box.
+				const HISTORY_KEY = 'search_history'
+				const HISTORY_MAX = 100
+				let search_history = []
+				try {
+					const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+					if (Array.isArray(stored)) search_history = stored
+				} catch {
+					search_history = []
+				}
+				let history_index = -1 // -1 = editing the live draft, not navigating history
+				let history_draft = ''
+				const push_history = (raw) => {
+					const q = raw.trim()
+					history_index = -1
+					if (! q) return
+					const existing = search_history.indexOf(q)
+					if (existing !== -1) search_history.splice(existing, 1)
+					search_history.unshift(q)
+					if (search_history.length > HISTORY_MAX) search_history.length = HISTORY_MAX
+					localStorage.setItem(HISTORY_KEY, JSON.stringify(search_history))
+				}
+				const apply_history_entry = (value) => {
+					search_query.value = value
+					do_search()
+					nextTick(() => {
+						const el = search_input.value
+						if (el) el.setSelectionRange(el.value.length, el.value.length)
+					})
+				}
+				const history_prev = () => { // older query
+					if (! search_history.length || history_index >= search_history.length - 1) return
+					if (history_index === -1) history_draft = search_query.value
+					history_index++
+					apply_history_entry(search_history[history_index])
+				}
+				const history_next = () => { // newer query, back toward the live draft
+					if (history_index === -1) return
+					history_index--
+					apply_history_entry(history_index === -1 ? history_draft : search_history[history_index])
+				}
 				const on_search_input = () => {
+					history_index = -1 // manual typing exits history navigation
 					t_input = performance.now()
 					do_search()
 				}
-				// Enter in the search box re-runs the search immediately to refresh stale results.
+				// Leaving the search box commits the current query to history (like a normal search box),
+				// but only when it isn't already the most recent entry.
+				const on_search_blur = () => {
+					const q = search_query.value.trim()
+					if (q && q !== search_history[0]) push_history(q)
+				}
+				// Enter in the search box re-runs the search immediately to refresh stale results and commits
+				// the query to the search history.
 				const trigger_search_now = () => {
+					push_history(search_query.value)
 					do_search()
 				}
 
@@ -788,7 +839,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

@@ -114,6 +114,7 @@ class IndexQueue extends Map {
 		const max_docs_per_batch = this.max_docs_per_batch
 		let entries = [...this.entries()]
 		let last_pause = Date.now()
+		let last_progress = Date.now()
 		for (let i = 0; i < entries.length; i += read_group_size) {
 			let read_group = entries.slice(i, i + read_group_size) // calling it "group" to distinguish from index-flush "batch"
 			await Promise.all(read_group.map(async ([path, file_meta]) => {
@@ -121,8 +122,6 @@ class IndexQueue extends Map {
 				uri_i++
 				// TODO: perf?
 				log_debug(`indexing (${uri_i + 1}/${size}) ${path}`)
-				if (uri_i % 100 === 0)
-					on_progress(uri_i / size)
 				// Binary-by-extension, empty, oversized, minified/generated (by name), and gitignored
 				// (index_content === false) files are still recorded (so the file picker can link to them
 				// and they aren't rescanned each time), but their contents are not indexed: text stays null
@@ -161,6 +160,12 @@ class IndexQueue extends Map {
 			}))
 			if (docs_batch_bytes_read > docs_batch_bytes_threshold || docs_batch.length >= max_docs_per_batch)
 				await flush_docs_batch()
+			// Update the status bar on a fixed cadence (not per N files) so it stays smooth regardless of
+			// per-file cost, and cheap on tiny files.
+			if (Date.now() - last_progress > 250) {
+				on_progress(uri_i / size)
+				last_progress = Date.now()
+			}
 			// Yield the disk frequently but briefly so a long index doesn't starve other fs users
 			// (editor search, file saves). Time-based, so the overhead and total index time stay small.
 			if (Date.now() - last_pause > this.yield_interval_ms) {

@@ -120,7 +120,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	let name_only_paths = new Set()
 
 	let on_index_queue_progress = (/** @type number? */ p) =>
-		status_bar_item_command.text = p == null ? '' : `$(search-fuzzy) 2/2 Indexing ${Math.round(p * 100)}%`
+		status_bar_item_command.text = p == null ? '' : `$(search-fuzzy) 3/3 Indexing ${Math.round(p * 100)}%`
 
 	let is_scanning = false
 	let scan = async () => {
@@ -129,7 +129,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		is_scanning = true
 		let start = Date.now()
 		log_debug('scanning...')
-		status_bar_item_command.text = '$(search-fuzzy) 1/2 Scanning'
+		status_bar_item_command.text = '$(search-fuzzy) 1/3 Listing'
 		let exclude_patterns = get_exclude_patterns()
 		log_debug('exclude_patterns', exclude_patterns)
 		let new_files
@@ -151,12 +151,19 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		let new_file_metas = []
 		const stat_chunk_size = 1000
 		let last_stat_pause = Date.now()
+		let last_stat_progress = Date.now()
+		status_bar_item_command.text = '$(search-fuzzy) 2/3 Scanning 0%'
 		for (let i = 0; i < new_files.length; i += stat_chunk_size) {
 			let metas = await Promise.all(new_files.slice(i, i + stat_chunk_size)
 				.map(f => uri_to_file_meta(f.uri, f.index_content).catch(() => null))) // file may vanish between listing and stat
 			for (let m of metas)
 				if (m)
 					new_file_metas.push(m)
+			if (Date.now() - last_stat_progress > 250) {
+				let frac = (i + stat_chunk_size) / new_files.length
+				status_bar_item_command.text = `$(search-fuzzy) 2/3 Scanning ${Math.min(100, Math.round(frac * 100))}%`
+				last_stat_progress = Date.now()
+			}
 			if (Date.now() - last_stat_pause > 90) {
 				await sleep(5)
 				last_stat_pause = Date.now()

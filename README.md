@@ -11,16 +11,20 @@ Features:
 
 images coming soon
 
-1. Instant alternative Search panel
-1. Instant text-based Autocomplete
-1. Instant text-based Go to definition fallback
-1. (Not yet implemented: Instant File picker)
+1. Instant alternative Search panel<br>
+   <img width="495" height="284" alt="image" src="https://github.com/user-attachments/assets/b0ae1e49-dd6c-4f92-8497-081a6c7501f3" />
+1. Instant text-based Autocomplete<br>
+   <img width="1097" height="299" alt="image" src="https://github.com/user-attachments/assets/ef994053-456d-4b48-85e0-d2f91a989614" />
+1. Instant text-based Go to definition fallback<br>
+   <img width="745" height="235" alt="image" src="https://github.com/user-attachments/assets/59d82ee5-7c87-4a84-aa95-f24d0c9bcfc7" />
+
+1. Instant File picker (Go to File / Go to Text), a fast drop-in for the built-in ones
 
 For all text files, regardless of language.
 
 ## Usage
 
-You can **install the extension in VSCode from [here](https://marketplace.visualstudio.com/items?itemName=phil294.search++)** or [here](https://open-vsx.org/extension/phil294/search++).
+You can **install the extension in VSCode from [the marketplace here](https://marketplace.visualstudio.com/items?itemName=phil294.search-plusplus)** or [Open VSX here](https://open-vsx.org/extension/phil294/search-plusplus).
 
 <!-- There are several configuration options, but you don't have to configure anything. -->
 
@@ -30,17 +34,64 @@ Once the initial indexing is complete, all actions provided by this extension ar
 
 Search++ will immediately start reading your workspace ("Scanning" in status bar) and maintain its index, even after reload.
 
-The first initial indexing ("Indexing" in status bar) per workspace takes roughly 2 ms per indexable file, so typically just a few seconds per workspace. It's always safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. The index is written to disk and takes up around 200 % in size of the indexable files themselves<!-- TODO: check again -->. Once complete, this process never has needs to run again, as the extension keeps monitoring your workspace for changes only.
+The first initial indexing ("Indexing" in status bar) per workspace takes roughly 2 ms per indexable file, so typically just a few seconds per workspace. <img width="149" height="32" alt="image" src="https://github.com/user-attachments/assets/8c0f728f-18bc-4d03-8d56-2d7fb8d20539" /> It's always safe to exit VSCode any time, after relaunching the indexing process will simply resume where it left off. The index is written to disk and takes up around 200 % in size of the indexable files themselves<!-- TODO: check again -->. Once complete, this process never has needs to run again, as the extension keeps monitoring your workspace for changes only.
 
 A file is considered indexable if it isn't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` settings with the latter taking precedence if conflicting respectively, or listed in some `.gitignore`, `.rignore` or `.ignore` file. The extension keeps watching all indexable files for changes, based on their modification date.
 
 All searches are performed case insensitive, results are case preserving.
 
+## Full takeover from the built-in search
+
+By default, Search++ **rebinds VSCode's built-in shortcuts** so that installing it is a one-click, out-of-the-box full replacement for the (slow, on very large repos) built-in Search, Go to File and Go to Symbol:
+
+| Shortcut (macOS) | Command |
+| --- | --- |
+| `Ctrl+Shift+F` (`Cmd+Shift+F`) | Search++: Focus Search |
+| `Ctrl+P` (`Cmd+P`) | Search++: Go to File |
+| `Ctrl+Shift+O` (`Cmd+Shift+O`) | Search++: Go to Text in Current File |
+| `Ctrl+T` (`Cmd+T`) | Search++: Go to Text in Workspace |
+| `F4` / `Shift+F4` | Focus next / previous search result |
+
+It is recommended to also move the Search++ side bar view to a convenient spot (e.g. drag it into the primary side bar next to the built-in Search icon, or set it as the default) so the full takeover feels seamless.
+
+### If a shortcut doesn't take effect
+
+The bindings above are *default* keybindings contributed by the extension. VSCode always lets your **personal** `keybindings.json` win over an extension's defaults, so if you (or another extension) already bind one of these keys, that binding takes precedence and Search++ never sees the key. This is why, for example, a personal `Ctrl+P → workbench.action.quickOpen` entry keeps opening the built-in file picker.
+
+To check for a conflict, open *Preferences: Open Keyboard Shortcuts* and search for the key (e.g. `ctrl+p`); a key bound more than once shows a warning icon. To force the full takeover regardless of any existing bindings, paste this into your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*) — because it lives in your user file, it beats every default:
+
+```json
+[
+    { "key": "ctrl+shift+f", "command": "search++.search" },
+    { "key": "ctrl+p", "command": "search++.filePicker" },
+    { "key": "ctrl+shift+o", "command": "search++.goToTextInFile" },
+    { "key": "ctrl+t", "command": "search++.goToTextInWorkspace" }
+]
+```
+
+On macOS use `cmd+` instead of `ctrl+`. Remove any of your own conflicting entries for these keys (or keep only the lines you want).
+
+### Disabling the shortcuts
+
+If you'd rather keep VSCode's built-in commands on some or all of these keys, add unbind entries to your `keybindings.json` (Command Palette → *Preferences: Open Keyboard Shortcuts (JSON)*). For example, to give `Ctrl+P` back to the built-in Go to File:
+
+```json
+[
+    { "key": "ctrl+p", "command": "-search++.filePicker" }
+]
+```
+
+Remove the corresponding `-workbench.action.*` unbind that Search++ contributes the same way if you also want the native command back on that key. You can inspect and edit every binding under *Preferences: Open Keyboard Shortcuts* by searching for `search++`.
+
+The file picker understands the same prefixes as the built-in one, so a single binding is enough if you prefer: type nothing to search files by name (append `:123` to jump to a line), prefix `@` to search text in the current file, or `#` to search text across the whole workspace.
+
+Within the Search++ view, results are navigable entirely from the keyboard, just like the built-in Search view: `ArrowUp`/`ArrowDown` move through files and matches, `ArrowLeft`/`ArrowRight` collapse/expand a file, `Enter` opens the selected match, and `Escape` returns to the search box. Pressing `Enter` in the search box re-runs the search to refresh stale results. `F4` / `Shift+F4` jump to the next / previous match and wrap around at the ends.
+
 ## Large workspaces
 
 Everything has been optimized for very large repositories. Behemoths like Chromium source (more than 350,000 indexable files) take about one hour for the initial indexing. There's still definitely room for indexing speed improvements, but once the onetime indexing is done, everything behaves instantaneously forever.
 
-In some very large projects like these with many `.gitignore` files, there might be too much delay at startup and possibly unnecessary indexing. This is because we're still waiting for VSCode's new `findFiles2` proposal to be stabilized: https://github.com/microsoft/vscode/issues/48674. The indexing won't change, but with `findFiles2`, git-excluded files can be omitted much faster in the preceding *scanning* process, resulting in less delay at every startup and possibly fixing unnecessary indexing.
+Scanning (finding the non-ignored files to index) is done with [ripgrep](https://github.com/BurntSushi/ripgrep), bundled via `@vscode/ripgrep`. It honours your `.gitignore`/`.ignore`/`.rgignore` files natively and very quickly, so even workspaces with many `.gitignore` files start up fast. The actual indexing runs in a separate worker thread, so it never blocks the editor UI.
 
 <!-- ## asdf
 
@@ -52,17 +103,53 @@ Special characters other than "normal" letters are skipped, you can only search 
 
 ## Roadmap
 
-- Explore adding a file picker too to replace the default one which is also immensely slow
 - Several configuration options
 - Possible speed improvements, various TODOs in the code
 - Performance comparison (below)
-- Search view improvements such as shortcuts or maybe even regex
+- Search view improvements such as maybe even regex
 
 ## Configuration
 
-### X
+You don't need to configure anything — every setting is optional. Search++ contributes the settings below, and additionally honours several native VSCode settings so it behaves like the built-in tools.
 
-TODO
+### Search++ settings
+
+```jsonc
+{
+    // Additional exclude globs for indexing, same { "**/glob": true } format as
+    // files.watcherExclude / search.exclude. Takes precedence over all of them.
+    "search++.watcherExclude": {},
+
+    // Skip full-text indexing of files larger than this many megabytes (they stay
+    // listed in the file picker). Applies to newly added/changed files only; run
+    // "Search++: Rebuild Index" to apply it to the whole workspace.
+    "search++.maxIndexSizeMb": 20,
+
+    // Skip full-text indexing of files whose average line length exceeds this
+    // (minified / generated / data files stay listed name-only). Applies to newly
+    // added/changed files only; run "Search++: Rebuild Index" to apply everywhere.
+    "search++.maxAverageLineLength": 300,
+
+    // Override search.useIgnoreFiles for indexing (null = inherit the native value).
+    // false also full-text indexes gitignored files, e.g. vendored dependencies.
+    "search++.useIgnoreFiles": null,
+
+    // Override search.useGlobalIgnoreFiles for indexing (null = inherit).
+    "search++.useGlobalIgnoreFiles": null,
+
+    // Verbose debug output to the "Search++" output channel. Keep off for normal use.
+    "search++.verboseLogging": false
+}
+```
+
+The ignore/exclude settings apply live — changing one re-indexes affected files with no reload. The two `max…` limits above apply only to files added or changed afterwards; to apply them to the entire existing index, run the **Search++: Rebuild Index** command (Command Palette), which wipes the index and reindexes from scratch. Rebuilding a very large workspace can take a while, so it's mainly meant for troubleshooting.
+
+### Honoured VSCode settings
+
+- `search.exclude`, `files.exclude`, `files.watcherExclude` — files excluded from indexing (see [Behavior](#behavior) for precedence).
+- `search.useIgnoreFiles` — honour `.gitignore` / `.ignore` (unless overridden by `search++.useIgnoreFiles`).
+- `search.useGlobalIgnoreFiles` — honour the global gitignore (unless overridden by `search++.useGlobalIgnoreFiles`).
+- `workbench.quickOpen.preserveInput` — whether the file picker keeps your last query when reopened.
 
 ## Performance
 
@@ -94,6 +181,8 @@ Tree view inputs also missing, need web views right now:
 
 https://github.com/microsoft/vscode/issues/97190
 
+optional case sensitive textual search when including uppercase letter(s)
+
 ## Ctags
 
 Search++ is similar to [Ctags](https://en.wikipedia.org/wiki/Ctags), but in contrary to the latter, it does not require you to configure anything, and it keeps watching your files, and it integrates nicely with VSCode.
@@ -106,7 +195,10 @@ Please open issues in the [GitHub Repository](https://github.com/phil294/search-
 
 ## Debugging
 
-There's a verbose log in `Output` > `Search++`. TODO: make optional
+There's an optional verbose log in `Output` > `Search++`. It is disabled by default; enable the `search++.verboseLogging` setting to turn it on (no reload required).
+
+> [!WARNING]
+> Keep `search++.verboseLogging` **off** for normal use. It emits one log line per file, which on large workspaces means tens of thousands of messages to the `Output` channel and can stall the extension host for minutes during indexing, drastically slowing it down. Only enable it briefly for troubleshooting. Indexing timings and milestones are always logged, even with verbose logging off.
 
 ## Building
 

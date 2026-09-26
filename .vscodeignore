@@ -1,8 +1,11 @@
 .vscode
 todo*
 vscodeignored
+bench
 node_modules
-!node_modules/node-sqlite3-wasm
+!node_modules/better-sqlite3/package.json
+!node_modules/better-sqlite3/lib/**
+!node_modules/better-sqlite3/prebuilds/**
 !node_modules/@vscode-elements/elements-lite/components/textfield/textfield.css
 !node_modules/@vscode-elements/elements-lite/components/collapsible/collapsible.css
 !node_modules/vue/dist/vue.esm-browser.prod.js

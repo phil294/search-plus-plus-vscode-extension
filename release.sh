@@ -2,6 +2,8 @@
 set -e
 set -o pipefail
 
+node --version >/dev/null || { echo "node missing"; exit 1; }
+
 pause() {
     read -r -n 1 -s -p 'Press any key to continue. . .'
     echo
@@ -9,6 +11,7 @@ pause() {
 
 on_close() {
     echo "module.exports = require('./src/extension')" > main.js # revert
+    rm -f worker.js # bundled only for packaging; dev loads src/worker.js
 }
 trap on_close EXIT
 
@@ -35,11 +38,11 @@ fi
 run git push --tags origin master --dry-run
 
 # broken since somewhere between vsce 2.2.0 and 2.15.0
-# run npx vsce verify-pat
+# run node_modules/.bin/vsce verify-pat
 # pause
 
 : ''
-run npx ncu -u -x '@types/vscode'
+run node_modules/.bin/ncu -u -x '@types/vscode'
 run npm i
 run git add package.json package-lock.json
 run git commit -m 'dependencies-upgrade'
@@ -53,8 +56,13 @@ run npm run lint
 
 # main.js is different for bundle than for local testing, so we can skip the esbuild step in dev
 # but still keep the same entrypoint in package.json for both scenarios
-npx esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode
-mv node_modules/node-sqlite3-wasm/dist/node-sqlite3-wasm.wasm .
+# @vscode/ripgrep is kept external so its rgPath (__dirname/../bin/rg) still resolves to the shipped binary.
+# better-sqlite3 is a native N-API addon: keep it external so its prebuilds/*.node loader resolves at runtime
+# from node_modules (esbuild cannot bundle a .node binary). N-API is ABI-stable, so the same prebuilds work
+# under VS Code's Electron without a per-version rebuild; all target OS/arch binaries ship in one VSIX.
+node_modules/.bin/esbuild src/extension.js --bundle --platform=node --outfile=main.js --external:vscode --external:@vscode/ripgrep --external:better-sqlite3
+# the indexer runs in a separate worker thread; it is bundled to the root as worker.js (src/ is not shipped)
+node_modules/.bin/esbuild src/worker.js --bundle --platform=node --outfile=worker.js --external:vscode --external:@vscode/ripgrep --external:better-sqlite3
 
 echo built
 
@@ -91,7 +99,7 @@ run git tag "$version"
 echo 'patched package.json version patch, updated changelog, committed, tagged'
 pause
 
-run npx vsce package
+run node_modules/.bin/vsce package
 vsix_file=$(ls -tr search-plusplus-*.vsix* |tail -1)
 mv "$vsix_file" vsix-out/"$vsix_file"
 vsix_file=vsix-out/"$vsix_file"
@@ -108,11 +116,11 @@ echo 'install vsix and test'
 pause
 pause
 
-run npx vsce publish
+run node_modules/.bin/vsce publish
 echo 'vsce published'
 pause
 
-run npx ovsx publish "$vsix_file" -p "$(cat ~/.open-vsx-access-token)"
+run node_modules/.bin/ovsx publish "$vsix_file" -p "$(cat ~/.open-vsx-access-token)"
 echo 'ovsx published'
 pause
 

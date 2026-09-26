@@ -178,9 +178,14 @@ class IndexQueue extends Map {
 			log_error(`Warning: File '${skipped_path_EACCESS}' could not be read due to permission problems.`)
 
 		log_debug('indexing complete')
-		log_debug(`indexing took ${(Date.now() - start) / 1000} seconds`)
-		log_info(`indexed ${size} file(s) in ${((Date.now() - start) / 1000).toFixed(1)}s`)
-		console.debug(`search++: indexing took ${(Date.now() - start) / 1000} seconds`)
+		const duration = Date.now() - start
+		log_debug(`indexing took ${duration / 1000} seconds`)
+		log_info(`indexed ${size} file(s) in ${(duration / 1000).toFixed(1)}s`)
+		console.debug(`search++: indexing took ${duration / 1000} seconds`)
+		if (duration < 400) {
+			on_progress(1)
+			await sleep(400 - duration)
+		}
 		on_progress(null)
 		this.is_running = false
 	}

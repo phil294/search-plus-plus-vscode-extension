@@ -20,3 +20,4 @@ vsix-out
 eslint.config.js
 eslint.config.mjs
 src
+!src/webview.html

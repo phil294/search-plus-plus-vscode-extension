@@ -133,14 +133,14 @@
 			"title": "Search++",
 			"properties": {
 				"search++.verboseLogging": {
-					"description": "When enabled, writes verbose debug output to the 'Search++' output channel. Leave off unless you are diagnosing a problem.",
+					"description": "Some basic info is always output in the dedicated Search++ output pane. You can enable lots more of diagnostic info for debugging with this setting. Keep disabled otherwise.",
 					"type": "boolean",
 					"default": false
 				},
 				"search++.watcherExclude": {
 					"type": "object",
 					"default": {},
-					"markdownDescription": "Additional exclude globs for indexing, same `{ \"**/glob\": true }` format as `#files.watcherExclude#` / `#search.exclude#`. Takes precedence over all of those when patterns conflict."
+					"markdownDescription": "Same format as but takes precedence over `files.watcherExclude`."
 				},
 				"search++.useIgnoreFiles": {
 					"type": [
@@ -148,7 +148,7 @@
 						"null"
 					],
 					"default": null,
-					"markdownDescription": "Override `#search.useIgnoreFiles#` for Search++ indexing. When unset (null), inherits the native value. Set to `false` to also full-text index gitignored files (e.g. vendored dependencies)."
+					"markdownDescription": "Overrides `search.useIgnoreFiles`, if specified."
 				},
 				"search++.useGlobalIgnoreFiles": {
 					"type": [
@@ -156,17 +156,17 @@
 						"null"
 					],
 					"default": null,
-					"markdownDescription": "Override `#search.useGlobalIgnoreFiles#` for Search++ indexing. When unset (null), inherits the native value."
+					"markdownDescription": "Overrides `search.useGlobalIgnoreFiles`, if specified."
 				},
 				"search++.maxIndexSizeMb": {
 					"type": "number",
 					"default": 20,
-					"markdownDescription": "Skip full-text indexing of files larger than this many megabytes (they stay listed in the file picker). Applies to newly added/changed files only; run the \"Search++: Rebuild Index\" command to apply it to the whole workspace."
+					"markdownDescription": "Skip indexing files above this many megabytes. They still stay listed in the file picker. Applies to newly added/changed files only. You can run \"Search++: Rebuild Index\" to refresh the index."
 				},
 				"search++.maxAverageLineLength": {
 					"type": "number",
 					"default": 300,
-					"markdownDescription": "Skip full-text indexing of files whose average line length exceeds this (minified/generated/data files stay listed name-only). Applies to newly added/changed files only; run the \"Search++: Rebuild Index\" command to apply it to the whole workspace."
+					"markdownDescription": "Skip indexing files whose average line length exceeds this. They still stay listed in the file picker. Applies to newly added/changed files only. You can run \"Search++: Rebuild Index\" to refresh the index. This setting comes mostly into play when you have e.g. minified JS bundles in your project and either have them tracked in Git or set useIgnoreFiles:false, and not excluded with any of the exclude settings (see Readme)."
 				}
 			}
 		}

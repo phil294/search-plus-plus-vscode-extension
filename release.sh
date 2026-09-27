@@ -37,17 +37,18 @@ fi
 
 run git push --tags origin master --dry-run
 
-# broken since somewhere between vsce 2.2.0 and 2.15.0
-# run node_modules/.bin/vsce verify-pat
-# pause
+run node_modules/.bin/vsce verify-pat
+run node_modules/.bin/ovsx verify-pat -p "$(cat ~/.open-vsx-access-token)"
 
-: ''
-run node_modules/.bin/ncu -u -x '@types/vscode'
+: '
+run node_modules/.bin/ncu --cooldown 50 -u -x '@types/vscode'
 run npm i
-run git add package.json package-lock.json
-run git commit -m 'dependencies-upgrade'
-echo 'deps upgraded'
-pause
+if ! [ -z "$(git status --porcelain)" ]; then
+    run git add package.json package-lock.json
+    run git commit -m 'dependencies-upgrade'
+    echo 'deps upgraded'
+fi
+    pause
 # '
 
 run npm run type-check
@@ -73,7 +74,7 @@ vscodium --extensionDevelopmentPath="$PWD" --disable-extensions
 pause
 pause
 
-git fetch
+run git fetch
 changes=$(git log --reverse "$(git describe --tags --abbrev=0)".. --pretty=format:"%h___%B" |grep . |sed -E 's/^([0-9a-f]{6,})___(.)/- [`\1`](https:\/\/github.com\/phil294\/search++\/commit\/\1) \U\2/')
 
 echo edit changelog

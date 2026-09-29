@@ -1,6 +1,6 @@
 let vscode = require('vscode')
 let { debounce, sleep } = require('./util')
-const { isMatch } = require('micromatch')
+const { makeRe } = require('micromatch')
 const { stat } = require('fs/promises')
 const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log')
 const { IndexerClient } = require('./indexer-client')
@@ -79,8 +79,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// ignores it; search++.watcherExclude stays the final override.
 	const exclude_config_keys = ['files.watcherExclude', 'files.exclude', 'search.exclude', 'search++.watcherExclude']
 
-	/** gitignored patterns are not part of this */
+	/** gitignored patterns are not part of this. Result is cached (rebuilt from config on every call is
+	 * wasteful when the file watcher calls this per event during a branch-switch storm); invalidated
+	 * whenever an exclude-related setting changes. */
+	/** @type {string[]|null} */
+	let exclude_patterns_cache = null
 	let get_exclude_patterns = () => {
+		if (exclude_patterns_cache)
+			return exclude_patterns_cache
 		/** @type {Record<string,boolean>} */
 		let default_excludes = {
 			// default values for search, files and files watcher exclude, not present in the queried config objs below (TODO: or are they?)
@@ -88,7 +94,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			// custom stuff which we'll never care for
 			'**/.git/**': true,
 		}
-		return [...new Set(Object.entries(
+		exclude_patterns_cache = [...new Set(Object.entries(
 			[default_excludes]
 				.concat(
 					// settings in the wrong format are silently ignored by Object.assign below
@@ -96,6 +102,17 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				.reduce((all, c) => Object.assign(all, c), {}))
 			.filter(c => c[1])
 			.map(c => c[0]))]
+		return exclude_patterns_cache
+	}
+	// Precompiled exclude matcher for the per-event watcher hot path. `micromatch.isMatch(p, globs)` is
+	// ~50x slower than testing prebuilt RegExps (it re-derives matchers each call), which is what made
+	// the watcher storm block the host for seconds. Rebuilt lazily whenever the pattern cache is cleared.
+	/** @type {RegExp[]|null} */
+	let exclude_regexps_cache = null
+	let is_path_excluded = (/** @type string */ p) => {
+		if (! exclude_regexps_cache)
+			exclude_regexps_cache = get_exclude_patterns().map(g => makeRe(g)).filter((/** @type {RegExp|false} */ re) => !! re)
+		return exclude_regexps_cache.some(re => re.test(p))
 	}
 
 	let uri_to_file_meta = async (/** @type vscode.Uri */ uri, /** @type boolean */ index_content = true) => {
@@ -230,6 +247,20 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		if (metas.length)
 			invalidate_empty_order_cache() // mtimes/new files reorder the picker's empty-query list
 	}
+	/** @type {Set<string>} */
+	let pending_deleted = new Set()
+	// Batch deletes into one debounced delete_paths RPC (mirrors flush_changed). A branch switch or
+	// dependency install deletes hundreds of files at once; one RPC per file floods the worker's queue.
+	let flush_deleted = () => {
+		let paths = [...pending_deleted]
+		pending_deleted.clear()
+		if (! paths.length)
+			return
+		indexer_client.delete_paths(paths)
+			.then(() => rerun_search_live())
+			.catch((/** @type any */ e) => log_error('delete_paths failed', e))
+		invalidate_empty_order_cache() // removed files must drop out of the picker's empty-query list
+	}
 	let file_changed = async (/** @type vscode.Uri */ uri) => {
 		if (uri.fsPath.endsWith('/FETCH_HEAD'))
 			return false
@@ -240,24 +271,25 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		// files.watcherExclude files should actually never arrive here, but for the other three settings,
 		// an additional filtering here is required:
 		let t = Date.now()
-		let excluded = isMatch(uri.path, get_exclude_patterns())
+		let excluded = is_path_excluded(uri.path)
 		file_changed_ms += Date.now() - t
 		if (excluded) { // TODO test
 			log_debug('but is excluded')
 			return false
 		}
+		pending_deleted.delete(uri.path) // a (re)index supersedes a pending delete of the same path
 		pending_changed.set(uri.path, uri)
 		debounce(flush_changed, 1000)
 	}
 	watcher.onDidChange(file_changed)
 	watcher.onDidCreate(file_changed)
-	watcher.onDidDelete(async (uri) => {
+	watcher.onDidDelete((uri) => {
 		log_debug('delete doc onDidDelete', uri.path)
 		indexed_paths.delete(uri.path)
 		name_only_paths.delete(uri.path)
-		await indexer_client.delete_paths([uri.path])
-		invalidate_empty_order_cache() // a removed file must drop out of the picker's empty-query list
-		rerun_search_live()
+		pending_changed.delete(uri.path) // a delete supersedes a pending (re)index of the same path
+		pending_deleted.add(uri.path)
+		debounce(flush_deleted, 1000)
 		if (gitignore_filenames.some(i => uri.path.endsWith('/' + i)))
 			scan_debounced()
 	})
@@ -275,8 +307,11 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			event.affectsConfiguration('search.useIgnoreFiles') ||
 			event.affectsConfiguration('search.useGlobalIgnoreFiles') ||
 			event.affectsConfiguration('search++.useIgnoreFiles') ||
-			event.affectsConfiguration('search++.useGlobalIgnoreFiles'))
+			event.affectsConfiguration('search++.useGlobalIgnoreFiles')) {
+			exclude_patterns_cache = null // config changed: rebuild the cached exclude globs on next use
+			exclude_regexps_cache = null
 			return scan_debounced()
+		}
 	})
 
 	/** @type {vscode.WebviewView | null} */

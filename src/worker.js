@@ -57,10 +57,14 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 		log_debug('deleting docs no longer present', gone.length)
 		await indexer.delete_doc_by_path(...gone)
 	}
-	// For a large (re)index, building the file_content word indexes once at the end is much faster
-	// than maintaining them across millions of per-row inserts. Recreate is crash-safe (init_db uses
-	// `if not exists`). Skipped for small syncs where the rebuild cost would outweigh the saving.
-	let bulk = queue.size > 5000
+	// Building the file_content word indexes once at the end (drop first, recreate after) only pays off
+	// when we're (re)indexing MOST of the DB, because create_word_indexes rebuilds them over the ENTIRE
+	// table — an O(all rows) full sort. For an incremental sync that touches a small fraction (e.g. a
+	// branch switch / npm install on a large repo), that global rebuild dwarfs the cost of just
+	// maintaining the indexes in place for the changed rows, and blocked the worker for minutes
+	// (create_word_indexes 273s). So only go bulk when the batch is a large share of the whole index.
+	let existing = old_meta_docs.length
+	let bulk = queue.size > 5000 && queue.size > existing * 0.5
 	let to_index = queue.size
 	log_info(`sync: ${queue.size} file(s) to (re)index, ${gone.length} gone${bulk ? ', deferred word-index build' : ''}`)
 	if (bulk) {
@@ -127,20 +131,44 @@ const methods = {
 	set_verbose: (/** @type boolean */ v) => { set_verbose(v) },
 }
 
-parentPort.on('message', async (msg) => {
-	if (! msg || msg.type !== 'rpc')
-		return
-	let { id, method, args } = msg
+// The worker owns ONE synchronous SQLite connection. The message handler is async, so if several
+// mutating RPCs are in flight they interleave at every `await` (file reads, sleeps, drain yields) and
+// end up fighting over the same connection + index queue: wall-times balloon (a 847-file index_files
+// run measured 400s because a concurrent sync_files' 273s create_word_indexes blocked the thread
+// mid-run) and operations appear to block each other. So chain all mutating RPCs to run strictly one
+// at a time, in arrival order. Read-only RPCs (search/autocomplete/picker) bypass the chain so they
+// stay responsive between index batches.
+const write_methods = new Set(['sync_files', 'index_files', 'delete_paths', 'set_index_params', 'clear_index'])
+let write_chain = Promise.resolve()
+/** Run one RPC and reply. `took Xms` (host side) includes queue-wait; this logs the ACTUAL work time. */
+async function dispatch(/** @type number */ id, /** @type string */ method, /** @type {any[]} */ call_args) {
+	let t = Date.now()
 	try {
 		let fn = methods[method]
 		if (! fn)
 			throw new Error('unknown worker method: ' + method)
-		let call_args = args || []
 		let result = await fn(...call_args)
 		parentPort?.postMessage({ type: 'rpc-reply', id, result })
 	} catch (e) {
 		parentPort?.postMessage({ type: 'rpc-reply', id, error: String(e?.stack || e) })
+	} finally {
+		let dur = Date.now() - t
+		if (dur > 2000)
+			log_info(`worker rpc ${method} ran ${(dur / 1000).toFixed(1)}s of actual work`)
 	}
+}
+
+parentPort.on('message', (msg) => {
+	if (! msg || msg.type !== 'rpc')
+		return
+	let { id, method, args } = msg
+	let call_args = args || []
+	if (write_methods.has(method))
+		// Serialize mutations: run strictly one at a time in arrival order.
+		write_chain = write_chain.then(() => dispatch(id, method, call_args))
+	else
+		// Reads bypass the chain so search/autocomplete/picker stay responsive between index batches.
+		dispatch(id, method, call_args)
 })
 
 process.on('unhandledRejection', (/** @type any */ err) => {

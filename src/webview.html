@@ -54,6 +54,12 @@
 			align-items: center;
 			gap: 4px;
 		}
+		.search-input-wrap {
+			position: relative;
+			flex: 1;
+			min-width: 0;
+			display: flex;
+		}
 		.search-input {
 			flex: 1;
 			min-width: 0;
@@ -61,6 +67,38 @@
 			line-height: 16px;
 			padding-top: 2px;
 			padding-bottom: 2px;
+			padding-right: 26px;
+		}
+		.input-actions {
+			position: absolute;
+			right: 2px;
+			top: 1px;
+			bottom: 1px;
+			display: flex;
+			align-items: center;
+			gap: 2px;
+		}
+		.input-toggle {
+			background: transparent;
+			border: none;
+			color: var(--vscode-icon-foreground);
+			cursor: pointer;
+			padding: 0 3px;
+			height: 18px;
+			border-radius: 3px;
+			display: flex;
+			align-items: center;
+			font-size: 11px;
+			line-height: 1;
+			font-weight: 600;
+		}
+		.input-toggle:hover {
+			background: var(--vscode-toolbar-hoverBackground);
+		}
+		.input-toggle.active {
+			background: var(--vscode-inputOption-activeBackground);
+			color: var(--vscode-inputOption-activeForeground);
+			outline: 1px solid var(--vscode-inputOption-activeBorder);
 		}
 		.toggle-filters {
 			background: transparent;
@@ -225,7 +263,12 @@
 	<div id="app">
 		<div class="search-container">
 			<div class="input-row">
-				<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" ref="search_input" />
+				<div class="search-input-wrap">
+					<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" ref="search_input" />
+					<div class="input-actions">
+						<button class="input-toggle" :class="{ active: case_sensitive }" @mousedown.prevent @click="toggle_case" title="Match Case (Alt+C)" tabindex="-1">Aa</button>
+					</div>
+				</div>
 				<button class="toggle-filters" :class="{ active: show_filters }" @click="show_filters = ! show_filters" title="Toggle Search Details">
 					<i class="codicon codicon-ellipsis"></i>
 				</button>
@@ -282,6 +325,7 @@
 				const search_query = ref(localStorage.getItem('search_query') || '')
 				const include_query = ref(localStorage.getItem('search_include') || '')
 				const exclude_query = ref(localStorage.getItem('search_exclude') || '')
+				const case_sensitive = ref(localStorage.getItem('search_case') === '1')
 				const show_filters = ref(localStorage.getItem('search_show_filters') === '1' || !! (include_query.value || exclude_query.value))
 				// Result file objects are markRaw'd (Vue never deep-proxies them or their match arrays), so `results`
 				// is a shallowRef: the render effect tracks only the array identity, not thousands of nested
@@ -550,6 +594,11 @@
 
 				const on_keydown = (e) => {
 					const target = e.target
+					if (e.altKey && (e.key === 'c' || e.key === 'C')) {
+						e.preventDefault()
+						toggle_case()
+						return
+					}
 					// let the include/exclude text inputs handle their own keys normally
 					if (target && target.classList && target.classList.contains('filter-input')) return
 					const in_search = target === search_input.value
@@ -601,6 +650,7 @@
 						query: search_query.value,
 						include: include_query.value,
 						exclude: exclude_query.value,
+						case_sensitive: case_sensitive.value,
 					})
 				}
 				// Last 100 search queries (most-recent first), navigated with Up/Down in the search box.
@@ -661,6 +711,15 @@
 					push_history(search_query.value)
 					do_search()
 				}
+				// Case sensitivity is an explicit toggle (button / Alt+C); re-run the search and re-highlight.
+				const toggle_case = () => {
+					case_sensitive.value = ! case_sensitive.value
+					localStorage.setItem('search_case', case_sensitive.value ? '1' : '0')
+					if (search_query.value.trim())
+						do_search()
+					else
+						highlight_search_terms()
+				}
 
 				watch(show_filters, (v) => localStorage.setItem('search_show_filters', v ? '1' : '0'))
 				watch(() => results.value.length, (len) =>
@@ -709,15 +768,15 @@
 					const t_hl = performance.now()
 					release_highlights()
 					const ranges = []
-					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive
+					// case sensitivity of highlighting follows the explicit toggle (Aa button / Alt+C)
 					const q = search_query.value.trim()
-					const case_sensitive = q.toLowerCase() !== q
-					const search_terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
+					const cs = case_sensitive.value
+					const search_terms = q.split(/\s+/).filter(Boolean).map(t => cs ? t : t.toLowerCase())
 					const line_elements = document.querySelectorAll('.line-text')
 					line_elements.forEach(element => {
 						const text = element.textContent
 						if (! text) return
-						const haystack = case_sensitive ? text : text.toLowerCase()
+						const haystack = cs ? text : text.toLowerCase()
 						search_terms.forEach(term => {
 							let index = 0
 							while ((index = haystack.indexOf(term, index)) !== -1) {
@@ -839,7 +898,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, case_sensitive, toggle_case, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

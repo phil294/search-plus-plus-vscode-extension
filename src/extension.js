@@ -6,7 +6,7 @@ const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log
 const { IndexerClient } = require('./indexer-client')
 const { EXT_ID, word_split_regex } = require('./global')
 const { find_files, find_indexed_paths } = require('./find-files')
-const { show_file_picker, invalidate_empty_order_cache } = require('./file-picker')
+const { show_file_picker, invalidate_empty_order_cache, prefetch_file_paths } = require('./file-picker')
 const { load_icon_mapping, icon_file_name } = require('./file-icons')
 const { RecencyStore } = require('./recency')
 const { readFileSync } = require('fs')
@@ -194,6 +194,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		// changed files and removes files that no longer exist.
 		invalidate_empty_order_cache() // the file set / mtimes may have changed
 		indexer_client.sync_files(/** @type {FileMeta[]} */ (new_file_metas)) // eslint-disable-line no-extra-parens
+			.then(() => prefetch_file_paths(indexer_client)) // warm the picker's file-list cache so Ctrl+P is instant
 			.catch((/** @type any */ e) => log_error('sync_files failed', e))
 	}
 	let scan_debounced = () => debounce(scan, 2500)
@@ -316,7 +317,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 	/** @type {vscode.WebviewView | null} */
 	let webview = null
-	/** @type {{query:string, include?:string, exclude?:string}|null} */
+	/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean}|null} */
 	let last_search = null
 	// Bumped on every new search/clear so a slow phase-2 (line scan) from a superseded query can't
 	// overwrite the results of the query the user is now looking at.
@@ -332,13 +333,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// replaces its list) or 'results_live' for an in-place update after the index changed. The line index
 	// resolves matches (file + line number + preview) in a single DB query with no file reads, so the
 	// whole result set is posted at once — no streaming, no placeholder skeleton, no layout shift.
-	let run_search = async (/** @type {{query:string, include?:string, exclude?:string}} */ params, /** @type {'results'|'results_live'} */ type) => {
+	let run_search = async (/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
 		let filter = {
 			include: parse_patterns(params.include),
 			exclude: parse_patterns(params.exclude),
 			roots: folders.map(f => f.uri.path),
+			case_sensitive: !! params.case_sensitive,
 		}
 		let gen = ++search_gen
 		let found = await indexer_client.search_lines(params.query, 1000, filter)
@@ -374,7 +376,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 			webview_view.webview.onDidReceiveMessage(async (message) => {
 				if (message.type === 'search') {
-					last_search = { query: message.query, include: message.include, exclude: message.exclude }
+					last_search = { query: message.query, include: message.include, exclude: message.exclude, case_sensitive: !! message.case_sensitive }
 					if (! message.query?.trim()) {
 						search_gen++ // cancel any in-flight phase-2 from a previous query
 						return webview?.webview.postMessage({ type: 'results', phase: 'lines', query: message.query || '', results: [], has_more: false, workspace_folders: [] })
@@ -391,8 +393,8 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 						return
 					let line = message.line_number - 1
 					let q = (last_search?.query || '').trim()
-					// case pseudo-sensitivity: an uppercase letter in the query makes highlighting case-sensitive too
-					let case_sensitive = q.toLowerCase() !== q
+					// case sensitivity of highlighting follows the search's explicit toggle
+					let case_sensitive = !! last_search?.case_sensitive
 					let terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
 					// highlight every occurrence of the query terms across the file, like the built-in search
 					let ranges = []

@@ -56,6 +56,11 @@ class Db {
 		return { run: (/** @type {any[]} */ values) => stmt.run(values), finalize: () => {} }
 	}
 
+	/** Register a scalar SQL function (arity inferred from fn.length). */
+	register_function(/** @type string */ name, /** @type {(...args:any[])=>any} */ fn) {
+		this._db.function(name, fn)
+	}
+
 	close() {
 		this._db.close()
 	}
@@ -97,6 +102,20 @@ module.exports.Indexer = class {
 
 		let db_path = path.join(index_path, 'index6.db') // version bump after scheme change
 		this.db = new Db(db_path)
+
+		// path_ok() lets search_lines push the include/exclude path filter INTO the SQL, so the LIMIT
+		// counts only rows that actually pass it. Filtering after a LIMIT starved restrictive filters: a
+		// common term + `include: *.js` returned nothing because the first LIMIT rows (rowid order) were
+		// all non-js files and got discarded before any js file was reached. The predicate is swapped in
+		// per query via _search_path_ok; _search_scan_count records how many rows it examined (diagnostics).
+		this._search_path_ok = /** @type {((p:string)=>boolean)|null} */ (null) // eslint-disable-line no-extra-parens
+		this._search_scan_count = 0
+		this.db.register_function('path_ok', (/** @type any */ p) => {
+			this._search_scan_count++
+			if (this._search_path_ok && ! this._search_path_ok(String(p)))
+				return 0
+			return 1
+		})
 
 		try {
 			this.init_db()
@@ -377,23 +396,39 @@ module.exports.Indexer = class {
 	 * line number and text directly — no files are opened. Results are grouped by file (in the FTS's
 	 * rowid order, i.e. file then line order) and capped at `limit` total matches. `filter` applies the
 	 * picker/panel include/exclude/roots globs per path. */
-	search_lines(/** @type {string} */ word, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+	search_lines(/** @type {string} */ word, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[], case_sensitive?:boolean}} */ filter = {}) {
 		let start = Date.now()
 		let fts_query = build_fts_query(word)
 		if (! fts_query)
 			return { results: [], has_more: false }
-		// Case pseudo-sensitivity: any uppercase letter switches the whole query to case-sensitive. The
-		// trigram index is case-insensitive and cannot enforce words shorter than 3 chars, so each candidate
-		// line is re-checked with a same-line regex (a lookahead per word). The line text is already in hand,
-		// so this costs nothing extra and keeps precision identical to a literal scan.
-		let case_sensitive = word.toLowerCase() !== word
+		// Case sensitivity is set explicitly by the caller (a UI toggle), not inferred. The trigram index
+		// is case-insensitive and cannot enforce words shorter than 3 chars, so each candidate line is
+		// re-checked with a same-line regex (a lookahead per word). The line text is already in hand, so
+		// this costs nothing extra and keeps precision identical to a literal scan.
+		let case_sensitive = !! filter.case_sensitive
 		let words = word.split(/\s+/).filter(Boolean)
 		let words_match = case_sensitive ? words : words.map(w => w.toLowerCase())
 		let line_re = new RegExp('^' + words.map(w => '(?=[^\\n]*' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')').join('') + '[^\\n]*$', case_sensitive ? '' : 'i')
 		let path_ok = build_path_filter(filter)
+		// Push the include/exclude filter INTO SQL (via path_ok) so the LIMIT applies to rows that pass
+		// it — filtering after the LIMIT made a common term + a restrictive include return nothing (the
+		// first `limit` rows were all filtered out). roots don't filter here (build_path_filter only uses
+		// them to relativise), so only real include/exclude globs need the pushdown.
+		let has_include = !! (filter.include && filter.include.length)
+		let has_exclude = !! (filter.exclude && filter.exclude.length)
+		let has_path_filter = has_include || has_exclude
+		let sql = 'select f.path as path, l.line_no as line_no, l.text as text from line_search_fts_trigram fts inner join line l on l.id = fts.rowid inner join file f on f.id = l.file_id where fts.text match ?'
+		if (has_path_filter) {
+			sql += ' and path_ok(f.path)'
+			this._search_path_ok = path_ok
+		}
 		// No `order by rank`: ranking forces SQLite to materialise and sort the ENTIRE match set, whereas an
 		// unordered query streams the first `limit` rows and stops. Rows arrive in rowid (file/line) order.
-		let rows = this.db.all('select f.path as path, l.line_no as line_no, l.text as text from line_search_fts_trigram fts inner join line l on l.id = fts.rowid inner join file f on f.id = l.file_id where fts.text match ? limit ?', [fts_query, limit])
+		sql += ' limit ?'
+		this._search_scan_count = 0
+		let rows = this.db.all(sql, [fts_query, limit])
+		this._search_path_ok = null
+		let scanned = this._search_scan_count
 		let t_query = Date.now()
 		/** @type {Map<string, {line_number:number, line_text:string}[]>} */
 		let by_path = new Map()
@@ -404,8 +439,6 @@ module.exports.Indexer = class {
 			if (! line_re.test(text))
 				continue
 			let file_path = String(row.path)
-			if (! path_ok(file_path))
-				continue
 			let matches = by_path.get(file_path)
 			if (! matches) {
 				matches = []
@@ -419,7 +452,7 @@ module.exports.Indexer = class {
 			}
 		}
 		let results = [...by_path.entries()].map(([path, matches]) => ({ path, matches }))
-		log_debug(`search_lines: ${Date.now() - start}ms (sql+fetch ${t_query - start}ms, filter+group ${Date.now() - t_query}ms), fetched ${rows.length} rows -> ${results.length} files, ${total_matches} matches | fts=${fts_query}`)
+		log_debug(`search_lines: ${Date.now() - start}ms (sql+fetch ${t_query - start}ms, filter+group ${Date.now() - t_query}ms), fetched ${rows.length} rows${has_path_filter ? ` (scanned ${scanned})` : ''} -> ${results.length} files, ${total_matches} matches | fts=${fts_query}`)
 		return { results, has_more }
 	}
 

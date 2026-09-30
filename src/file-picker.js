@@ -23,6 +23,22 @@ let basename = (/** @type string */ p) => {
 	return i === -1 ? p : p.slice(i + 1)
 }
 
+/** Path used for ranking: the workspace-folder name followed by the in-folder relative path (e.g.
+ * `thirdeye_symfony/vendor/…/Client.php`), so folder-name tokens are matchable (plain relativize strips
+ * the folder name). Files outside every folder fall back to their basename. */
+function root_qualify(/** @type string */ p, /** @type {{name:string, path:string}[]} */ folders) {
+	let folder = null
+	let longest = -1
+	for (let f of folders)
+		if ((p === f.path || p.startsWith(f.path + '/')) && f.path.length > longest) {
+			folder = f
+			longest = f.path.length
+		}
+	if (! folder)
+		return basename(p)
+	return folder.name + '/' + p.slice(folder.path.length + 1)
+}
+
 /** Directory label for the picker: the workspace-folder name plus the in-folder directory, e.g.
  * `docker • gn_dev` for ~/docker/gn_dev/.env. Mirrors the search view's get_dir_path. */
 function describe_dir(/** @type string */ p, /** @type {{name:string, path:string}[]} */ folders) {
@@ -52,6 +68,31 @@ const recency_ranking_window_ms = 5 * 24 * 60 * 60 * 1000
 //   basename-vs-path-match distinction (+1000) or dominating a much better fuzzy match.
 const mtime_bonus_max = 300
 const mtime_bonus_half_life_days = 14
+// - recently-OPENED files (RecencyStore) get a strong, smoothly-decaying bonus applied to the SCORE
+//   while typing (not just a tiebreak), so a file you opened minutes ago clearly outranks equally
+//   fuzzy-matching files you've never touched. An explicit open is a far better relevance signal than a
+//   background mtime change, so this is much stronger than mtime_bonus; it decays to 0 over the window.
+const recency_bonus_max = 1500
+const recency_bonus_half_life_days = 1
+// - files living under a well-known dependency/build/vendor directory are almost never what you're
+//   looking for, so they sort below every ordinary match (a dedicated `dep` sort key, applied before
+//   the match-tightness tier). They're still shown, just far down. Matching is by exact path segment,
+//   so `vendor/…` is deprioritised but `vendored_helper.js` is not.
+const deprioritized_dir_segments = new Set(['node_modules', 'vendor', 'bower_components', 'dist', 'build', 'out', 'third_party', 'target', '.venv', 'venv', '.next', '.nuxt', '.git', 'coverage', '__pycache__', '.cache'])
+
+/** True if any exact path segment of `p` is a known dependency/build/vendor directory (see
+ * deprioritized_dir_segments). Segment-exact so `vendor/x` hits but `vendored.js` doesn't. */
+function is_deprioritized_path(/** @type string */ p) {
+	let start = 0
+	for (let i = 0; i <= p.length; i++) {
+		if (i !== p.length && p.charCodeAt(i) !== 47) // '/'
+			continue
+		if (i > start && deprioritized_dir_segments.has(p.slice(start, i)))
+			return true
+		start = i + 1
+	}
+	return false
+}
 
 // Cache of the empty-query ordering (top slice only). Sorting every workspace path (hundreds of
 // thousands) is the one unbounded synchronous cost in the picker, so we keep the result and reuse it
@@ -60,11 +101,30 @@ const mtime_bonus_half_life_days = 14
 /** @type {{p:string, base:string, rel:string}[] | null} */
 let empty_order_cache = null
 
+// Full file list, cached so re-opening the picker (Ctrl+P) is instant instead of blocking on an
+// all_file_paths RPC (50–1500ms when the worker is busy). Kept warm by a background refresh after every
+// open and an explicit prefetch after each scan (see prefetch_file_paths / extension.js).
+/** @type {{path:string, mtime:number}[] | null} */
+let cached_all_paths = null
+
 /** Score bonus in [0, mtime_bonus_max] for a file last modified `mtime` (unix seconds) ago, halving
  * every `mtime_bonus_half_life_days` days. */
 function mtime_bonus(/** @type number */ mtime) {
 	let age_days = Math.max(0, (Date.now() / 1000 - mtime) / 86400)
 	return mtime_bonus_max * 0.5 ** (age_days / mtime_bonus_half_life_days)
+}
+
+/** Score bonus in [0, recency_bonus_max] for a file last OPENED `ts` (unix ms) ago, halving every
+ * recency_bonus_half_life_days; 0 once older than the recency window or never opened. */
+function recency_bonus(/** @type number */ ts) {
+	if (! ts)
+		return 0
+	let age_ms = Date.now() - ts
+	if (age_ms <= 0)
+		return recency_bonus_max
+	if (age_ms > recency_ranking_window_ms)
+		return 0
+	return recency_bonus_max * 0.5 ** (age_ms / 86400000 / recency_bonus_half_life_days)
 }
 
 /** @type {import('vscode').Uri|null} */
@@ -223,13 +283,25 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 	let original_selection = preview_editor?.selection
 	let accepted = false
 
+	// Load the file list from the warm cache when available (synchronous → the picker opens instantly,
+	// like built-in Ctrl+P), otherwise fetch once. Either way, kick a background refresh so the next
+	// open is instant and reflects any files added/removed since the cache was filled.
 	/** @type {{path:string, mtime:number}[]} */
-	let all_paths = []
-	try {
-		all_paths = await indexer_client.all_file_paths()
-	} catch (e) {
-		log_error('file picker: all_file_paths failed', e)
-	}
+	let all_paths = cached_all_paths || []
+	if (! cached_all_paths) {
+		let t_fetch = Date.now()
+		try {
+			all_paths = await indexer_client.all_file_paths()
+			cached_all_paths = all_paths
+			log_debug(`file picker: fetched ${all_paths.length} path(s) in ${Date.now() - t_fetch}ms (cold)`)
+		} catch (e) {
+			log_error('file picker: all_file_paths failed', e)
+		}
+	} else
+		log_debug(`file picker: ${all_paths.length} path(s) from warm cache (instant)`)
+	indexer_client.all_file_paths()
+		.then(paths => { cached_all_paths = paths; empty_order_cache = null })
+		.catch((/** @type any */ e) => log_error('file picker: background all_file_paths refresh failed', e))
 
 	/** @type {NodeJS.Timeout|null} */
 	let search_debounce = null
@@ -274,9 +346,11 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 					let recency_ts = recency ? recency.get(p) : 0
 					if (t_sort - recency_ts > recency_ranking_window_ms)
 						recency_ts = 0
-					return { p, recency_ts, mtime }
+					return { p, recency_ts, mtime, dep: is_deprioritized_path(p) ? 1 : 0 }
 				})
-				rows.sort((a, b) => b.recency_ts - a.recency_ts || b.mtime - a.mtime || a.p.length - b.p.length)
+				// recently-opened files still surface first; otherwise dependency/vendor dirs sink below
+				// ordinary files before the mtime/path-length tiebreaks apply.
+				rows.sort((a, b) => b.recency_ts - a.recency_ts || a.dep - b.dep || b.mtime - a.mtime || a.p.length - b.p.length)
 				empty_order_cache = rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) }))
 				sort_ms = Date.now() - t_sort
 			}
@@ -311,11 +385,28 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		for (let { path: p, mtime } of candidates) {
 			let rel = relativize(p, roots)
 			let base = basename(p)
-			let base_score = score_target(tokens, base, base.toLowerCase())
-			// filename matches rank above path-only matches; both fall back to the full relative path
+			let base_lower = base.toLowerCase()
+			// folder-qualified path so folder-name tokens (e.g. the workspace-folder name) are matchable
+			let qrel = root_qualify(p, folder_list)
+			let qrel_lower = qrel.toLowerCase()
+			let base_score = score_target(tokens, base, base_lower)
+			// filename matches rank above path-only matches; both fall back to the folder-qualified path
 			let is_base_match = base_score !== null && base_score >= min_base_score
-			let score = is_base_match ? /** @type {number} */ (base_score) + 1000 : score_target(tokens, rel, rel.toLowerCase()) // eslint-disable-line no-extra-parens
+			let score = is_base_match ? /** @type {number} */ (base_score) + 1000 : score_target(tokens, qrel, qrel_lower) // eslint-disable-line no-extra-parens
 			if (score !== null) {
+				// Match-tightness tier — the primary ranking key (after vendor deprioritisation), so contiguous
+				// substring matches decisively beat scattered subsequence ones. 3 = every token is a substring
+				// of the basename, 2 = of the folder-qualified path, 1 = a tight subsequence of the basename,
+				// 0 = subsequence of the path only. `score` still orders within a tier.
+				let tier
+				if (tokens.every(t => base_lower.includes(t)))
+					tier = 3
+				else if (tokens.every(t => qrel_lower.includes(t)))
+					tier = 2
+				else if (is_base_match)
+					tier = 1
+				else
+					tier = 0
 				// Reward matching a larger fraction of the basename so a full/near-full name match (`.env`
 				// for ".env", `note` for "notes") outranks a longer submatch (`.env.production`, `NOTES.txt`)
 				// even when the latter was modified more recently (coverage weight > mtime_bonus_max). A
@@ -325,10 +416,12 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				let ext_len = base.length - dot - 1
 				let cov_len = dot > 0 && ext_len >= 1 && ext_len <= 4 ? dot : base.length
 				let coverage = is_base_match ? query_len / Math.max(1, cov_len) : 0
-				scored.push({ p, rel, base, score: score + coverage * 1000 + mtime_bonus(mtime), recency: recency ? recency.get(p) : 0 })
+				let rec = recency ? recency.get(p) : 0
+				scored.push({ p, rel, base, tier, dep: is_deprioritized_path(p) ? 1 : 0, score: score + coverage * 1000 + mtime_bonus(mtime) + recency_bonus(rec), recency: rec })
 			}
 		}
-		scored.sort((a, b) => b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
+		// vendor/dependency files last, then tighter tiers, then fine-grained score, then recency/length.
+		scored.sort((a, b) => a.dep - b.dep || b.tier - a.tier || b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
 		render(scored)
 		log_debug(`file picker: "${query}" \u2014 ${candidates.length} candidate(s) in ${rpc_ms}ms, ${scored.length} matched, showing ${Math.min(scored.length, 500)} \u2014 score+sort ${Date.now() - t_score}ms`)
 	}
@@ -381,7 +474,8 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		search_debounce = setTimeout(async () => {
 			try {
 				let t_lines = Date.now()
-				let { results } = await indexer_client.search_lines(query, 2000, { roots })
+				// case pseudo-sensitivity: an uppercase letter in the query makes matching case-sensitive
+				let { results } = await indexer_client.search_lines(query, 2000, { roots, case_sensitive: query.toLowerCase() !== query })
 				if (my_token !== workspace_token)
 					return
 				let lines_ms = Date.now() - t_lines
@@ -499,3 +593,12 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 module.exports.show_file_picker = show_file_picker
 // Drop the cached empty-query ordering; call whenever recency or the indexed file set changes.
 module.exports.invalidate_empty_order_cache = () => { empty_order_cache = null }
+// Warm the file-list cache so the next Ctrl+P is instant. Call after each scan.
+module.exports.prefetch_file_paths = async (/** @type IndexerClient */ indexer_client) => {
+	try {
+		cached_all_paths = await indexer_client.all_file_paths()
+		empty_order_cache = null
+	} catch (e) {
+		log_error('prefetch_file_paths failed', e)
+	}
+}

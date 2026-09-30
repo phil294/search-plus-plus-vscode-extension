@@ -104,6 +104,12 @@ class IndexerClient {
 		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('search_lines', word, limit, filter)) // eslint-disable-line no-extra-parens
 	}
 
+	/** Regex substring search: the pattern's mandatory literals drive an FTS prefilter, then each
+	 * candidate line is re-tested against the real RegExp. Requires at least one literal. */
+	search_lines_regex(/** @type string */ pattern, /** @type boolean */ case_sensitive, /** @type string[] */ literals, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('search_lines_regex', pattern, case_sensitive, literals, limit, filter)) // eslint-disable-line no-extra-parens
+	}
+
 	find_definition_lines(/** @type string */ word, /** @type number */ limit) {
 		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('find_definition_lines', word, limit)) // eslint-disable-line no-extra-parens
 	}

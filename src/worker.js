@@ -127,6 +127,7 @@ const methods = {
 	find_paths_by_word: (/** @type string */ word, /** @type number */ limit) => indexer.find_paths_by_word(word, limit),
 	find_paths_fuzzy: (/** @type string[] */ tokens, /** @type number */ limit) => indexer.find_paths_fuzzy(tokens, limit),
 	search_lines: (/** @type string */ word, /** @type number */ limit, /** @type any */ filter) => indexer.search_lines(word, limit, filter),
+	search_lines_regex: (/** @type string */ pattern, /** @type boolean */ case_sensitive, /** @type string[] */ literals, /** @type number */ limit, /** @type any */ filter) => indexer.search_lines_regex(pattern, case_sensitive, literals, limit, filter),
 	find_definition_lines: (/** @type string */ word, /** @type number */ limit) => indexer.find_definition_lines(word, limit),
 	set_verbose: (/** @type boolean */ v) => { set_verbose(v) },
 }

@@ -1,11 +1,11 @@
 let vscode = require('vscode')
-let { debounce, sleep } = require('./util')
+let { debounce, sleep, extract_required_literals } = require('./util')
 const { makeRe } = require('micromatch')
 const { stat } = require('fs/promises')
 const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log')
 const { IndexerClient } = require('./indexer-client')
 const { EXT_ID, word_split_regex } = require('./global')
-const { find_files, find_indexed_paths } = require('./find-files')
+const { find_files, find_indexed_paths, ripgrep_search_lines } = require('./find-files')
 const { show_file_picker, invalidate_empty_order_cache, prefetch_file_paths } = require('./file-picker')
 const { load_icon_mapping, icon_file_name } = require('./file-icons')
 const { RecencyStore } = require('./recency')
@@ -317,11 +317,15 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 	/** @type {vscode.WebviewView | null} */
 	let webview = null
-	/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean}|null} */
+	/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean, regex?:boolean}|null} */
 	let last_search = null
 	// Bumped on every new search/clear so a slow phase-2 (line scan) from a superseded query can't
 	// overwrite the results of the query the user is now looking at.
 	let search_gen = 0
+	// The AbortController of the current ripgrep fallback (regex with no prefilterable literal), so a
+	// superseded or cleared search can kill the still-running rg process instead of leaking it.
+	/** @type {AbortController|null} */
+	let active_rg_abort = null
 	// Highlight for every occurrence of the query in an opened file, mirroring the built-in search.
 	let match_highlight_decoration = vscode.window.createTextEditorDecorationType({
 		backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
@@ -333,17 +337,47 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 	// replaces its list) or 'results_live' for an in-place update after the index changed. The line index
 	// resolves matches (file + line number + preview) in a single DB query with no file reads, so the
 	// whole result set is posted at once — no streaming, no placeholder skeleton, no layout shift.
-	let run_search = async (/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean}} */ params, /** @type {'results'|'results_live'} */ type) => {
+	let run_search = async (/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean, regex?:boolean}} */ params, /** @type {'results'|'results_live'} */ type) => {
 		let folders = vscode.workspace.workspaceFolders || []
 		let workspace_folders = folders.map(folder => ({ name: folder.name, path: folder.uri.path }))
-		let filter = {
-			include: parse_patterns(params.include),
-			exclude: parse_patterns(params.exclude),
-			roots: folders.map(f => f.uri.path),
-			case_sensitive: !! params.case_sensitive,
-		}
+		let include = parse_patterns(params.include)
+		let exclude = parse_patterns(params.exclude)
+		let case_sensitive = !! params.case_sensitive
 		let gen = ++search_gen
-		let found = await indexer_client.search_lines(params.query, 1000, filter)
+		// A new search supersedes any in-flight rg fallback; stop it so it isn't left scanning.
+		if (active_rg_abort) {
+			active_rg_abort.abort()
+			active_rg_abort = null
+		}
+		/** @type {{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}} */
+		let found
+		if (params.regex) {
+			try {
+				new RegExp(params.query, case_sensitive ? '' : 'i') // eslint-disable-line no-new
+			} catch (e) {
+				if (gen !== search_gen)
+					return
+				// invalid regex: clear results and tell the webview so it can flag the input
+				return webview?.webview.postMessage({ type, phase: 'lines', query: params.query, has_more: false, results: [], workspace_folders, regex_error: String((/** @type any */ (e))?.message || e) }) // eslint-disable-line no-extra-parens
+			}
+			let literals = extract_required_literals(params.query)
+			if (literals.length)
+				found = await indexer_client.search_lines_regex(params.query, case_sensitive, literals, 1000, { include, exclude, roots: folders.map(f => f.uri.path) })
+			else {
+				active_rg_abort = new AbortController()
+				found = await ripgrep_search_lines({
+					pattern: params.query, case_sensitive, include, exclude, exclude_globs: get_exclude_patterns(), limit: 1000, signal: active_rg_abort.signal,
+					// Stream matches as rg finds them (a scan over an unignored tree can take a while), so the
+					// user sees results immediately like the built-in search instead of waiting for the whole run.
+					on_partial: (results, has_more) => {
+						if (gen !== search_gen)
+							return
+						webview?.webview.postMessage({ type, phase: 'partial', query: params.query, has_more, workspace_folders, results: results.map(r => ({ ...r, icon: icon_file_name(r.path) })) })
+					},
+				})
+			}
+		} else
+			found = await indexer_client.search_lines(params.query, 1000, { include, exclude, roots: folders.map(f => f.uri.path), case_sensitive })
 		if (gen !== search_gen)
 			return
 		webview?.webview.postMessage({
@@ -376,9 +410,13 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 
 			webview_view.webview.onDidReceiveMessage(async (message) => {
 				if (message.type === 'search') {
-					last_search = { query: message.query, include: message.include, exclude: message.exclude, case_sensitive: !! message.case_sensitive }
+					last_search = { query: message.query, include: message.include, exclude: message.exclude, case_sensitive: !! message.case_sensitive, regex: !! message.regex }
 					if (! message.query?.trim()) {
 						search_gen++ // cancel any in-flight phase-2 from a previous query
+						if (active_rg_abort) {
+							active_rg_abort.abort()
+							active_rg_abort = null
+						}
 						return webview?.webview.postMessage({ type: 'results', phase: 'lines', query: message.query || '', results: [], has_more: false, workspace_folders: [] })
 					}
 					await run_search(last_search, 'results')
@@ -395,10 +433,39 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					let q = (last_search?.query || '').trim()
 					// case sensitivity of highlighting follows the search's explicit toggle
 					let case_sensitive = !! last_search?.case_sensitive
-					let terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
-					// highlight every occurrence of the query terms across the file, like the built-in search
+					// highlight every match across the file (like the built-in search) and preselect the first
+					// match on the target line; regex and literal modes fill the same ranges/col/len.
 					let ranges = []
-					if (terms.length) {
+					let col = -1
+					let len = 0
+					if (last_search?.regex && q) {
+						let re = null
+						try {
+							re = new RegExp(q, case_sensitive ? 'g' : 'gi')
+						} catch {
+							/* invalid regex: no highlight */
+						}
+						if (re) {
+							let full = editor.document.getText()
+							let m
+							let guard = 0
+							while ((m = re.exec(full)) !== null) {
+								if (m.index === re.lastIndex)
+									re.lastIndex++ // don't loop forever on a zero-width match
+								if (m[0].length) {
+									ranges.push(new vscode.Range(editor.document.positionAt(m.index), editor.document.positionAt(m.index + m[0].length)))
+									if (++guard > 100000)
+										break
+								}
+							}
+							let line_match = new RegExp(q, case_sensitive ? '' : 'i').exec(editor.document.lineAt(line).text)
+							if (line_match && line_match[0].length) {
+								col = line_match.index
+								len = line_match[0].length
+							}
+						}
+					} else if (q) {
+						let terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
 						let full = case_sensitive ? editor.document.getText() : editor.document.getText().toLowerCase()
 						for (let term of terms) {
 							let idx = 0
@@ -407,19 +474,16 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 								idx += term.length
 							}
 						}
-					}
-					editor.setDecorations(match_highlight_decoration, ranges)
-					// preselect the first matching term on the target line (fall back to the line start)
-					let line_text = case_sensitive ? editor.document.lineAt(line).text : editor.document.lineAt(line).text.toLowerCase()
-					let col = -1
-					let len = 0
-					for (let term of terms) {
-						let c = line_text.indexOf(term)
-						if (c !== -1 && (col === -1 || c < col)) {
-							col = c
-							len = term.length
+						let line_text = case_sensitive ? editor.document.lineAt(line).text : editor.document.lineAt(line).text.toLowerCase()
+						for (let term of terms) {
+							let c = line_text.indexOf(term)
+							if (c !== -1 && (col === -1 || c < col)) {
+								col = c
+								len = term.length
+							}
 						}
 					}
+					editor.setDecorations(match_highlight_decoration, ranges)
 					let selection = col === -1
 						? new vscode.Selection(line, 0, line, 0)
 						: new vscode.Selection(line, col, line, col + len)
@@ -428,7 +492,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				}
 			})
 		},
-	}))
+	}, { webviewOptions: { retainContextWhenHidden: true } }))
 
 	let status_bar_item_command = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left)
 	// status_bar_item_command.command = START_CMD

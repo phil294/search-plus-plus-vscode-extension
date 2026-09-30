@@ -151,6 +151,24 @@
 			color: var(--vscode-descriptionForeground);
 			/* font-size: 12px; */
 		}
+		.search-progress {
+			flex: none;
+			height: 2px;
+			overflow: hidden;
+			position: relative;
+		}
+		.search-progress .progress-bit {
+			position: absolute;
+			left: 0;
+			height: 2px;
+			width: 30%;
+			background: var(--vscode-progressBar-background);
+			animation: spp-progress 1.4s infinite ease-in-out;
+		}
+		@keyframes spp-progress {
+			0% { transform: translateX(-100%); }
+			100% { transform: translateX(433%); }
+		}
 		.result-count .codicon {
 			font-size: 13px;
 			vertical-align: text-bottom;
@@ -267,6 +285,7 @@
 					<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" ref="search_input" />
 					<div class="input-actions">
 						<button class="input-toggle" :class="{ active: case_sensitive }" @mousedown.prevent @click="toggle_case" title="Match Case (Alt+C)" tabindex="-1">Aa</button>
+						<button class="input-toggle" :class="{ active: use_regex }" @mousedown.prevent @click="toggle_regex" title="Use Regular Expression (Alt+R)" tabindex="-1">.*</button>
 					</div>
 				</div>
 				<button class="toggle-filters" :class="{ active: show_filters }" @click="show_filters = ! show_filters" title="Toggle Search Details">
@@ -285,6 +304,7 @@
 				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_search_input" placeholder="e.g. *.test.js, dist/" autocomplete="off" />
 			</div>
 		</div>
+		<div class="search-progress"><div v-show="loading" class="progress-bit"></div></div>
 		<div v-if="result_count_text" class="result-count">{{ result_count_text }}</div>
 		<div class="results-container" ref="results_container">
 			<div v-if="! results.length && search_query.trim() && ! loading" class="no-results">
@@ -326,7 +346,12 @@
 				const include_query = ref(localStorage.getItem('search_include') || '')
 				const exclude_query = ref(localStorage.getItem('search_exclude') || '')
 				const case_sensitive = ref(localStorage.getItem('search_case') === '1')
-				const show_filters = ref(localStorage.getItem('search_show_filters') === '1' || !! (include_query.value || exclude_query.value))
+				const use_regex = ref(localStorage.getItem('search_regex') === '1')
+				// Honour the explicit collapsed/expanded choice once the user has ever toggled it (persisted);
+				// only fall back to auto-expanding when there's filter content on first-ever use. Otherwise the
+				// panel reappeared every time the view was re-created (e.g. switching views and back).
+				const saved_show_filters = localStorage.getItem('search_show_filters')
+				const show_filters = ref(saved_show_filters != null ? saved_show_filters === '1' : !! (include_query.value || exclude_query.value))
 				// Result file objects are markRaw'd (Vue never deep-proxies them or their match arrays), so `results`
 				// is a shallowRef: the render effect tracks only the array identity, not thousands of nested
 				// properties. This makes both mount and teardown near-native (a deep-reactive list of ~1000 matches
@@ -599,6 +624,11 @@
 						toggle_case()
 						return
 					}
+					if (e.altKey && (e.key === 'r' || e.key === 'R')) {
+						e.preventDefault()
+						toggle_regex()
+						return
+					}
 					// let the include/exclude text inputs handle their own keys normally
 					if (target && target.classList && target.classList.contains('filter-input')) return
 					const in_search = target === search_input.value
@@ -638,7 +668,9 @@
 					}
 				}
 
+				let search_debounce_timer = null
 				const do_search = () => {
+					clearTimeout(search_debounce_timer)
 					localStorage.setItem('search_query', search_query.value)
 					localStorage.setItem('search_include', include_query.value)
 					localStorage.setItem('search_exclude', exclude_query.value)
@@ -651,6 +683,7 @@
 						include: include_query.value,
 						exclude: exclude_query.value,
 						case_sensitive: case_sensitive.value,
+						regex: use_regex.value,
 					})
 				}
 				// Last 100 search queries (most-recent first), navigated with Up/Down in the search box.
@@ -697,7 +730,21 @@
 				const on_search_input = () => {
 					history_index = -1 // manual typing exits history navigation
 					t_input = performance.now()
-					do_search()
+					schedule_search()
+				}
+				// Coalesce keystrokes: reflect the pending work immediately (progress bar on) but defer the
+				// actual search so fast typing sends one request, not one per character. Clearing is instant.
+				const schedule_search = () => {
+					clearTimeout(search_debounce_timer)
+					// Only regex is debounced: it can fall back to a slow ripgrep scan, so coalescing keystrokes
+					// avoids firing a heavy search per character. Plain FTS searches are fast, so run them
+					// immediately for instant feedback. An empty query always clears instantly.
+					if (! use_regex.value || ! search_query.value.trim()) {
+						do_search()
+						return
+					}
+					loading.value = true
+					search_debounce_timer = setTimeout(do_search, 150)
 				}
 				// Leaving the search box commits the current query to history (like a normal search box),
 				// but only when it isn't already the most recent entry.
@@ -715,6 +762,15 @@
 				const toggle_case = () => {
 					case_sensitive.value = ! case_sensitive.value
 					localStorage.setItem('search_case', case_sensitive.value ? '1' : '0')
+					if (search_query.value.trim())
+						do_search()
+					else
+						highlight_search_terms()
+				}
+				// Regex mode toggle (button / Alt+R): the query is treated as a regular expression.
+				const toggle_regex = () => {
+					use_regex.value = ! use_regex.value
+					localStorage.setItem('search_regex', use_regex.value ? '1' : '0')
 					if (search_query.value.trim())
 						do_search()
 					else
@@ -771,26 +827,48 @@
 					// case sensitivity of highlighting follows the explicit toggle (Aa button / Alt+C)
 					const q = search_query.value.trim()
 					const cs = case_sensitive.value
-					const search_terms = q.split(/\s+/).filter(Boolean).map(t => cs ? t : t.toLowerCase())
 					const line_elements = document.querySelectorAll('.line-text')
-					line_elements.forEach(element => {
-						const text = element.textContent
-						if (! text) return
-						const haystack = cs ? text : text.toLowerCase()
-						search_terms.forEach(term => {
-							let index = 0
-							while ((index = haystack.indexOf(term, index)) !== -1) {
-								const range = new Range()
+					if (use_regex.value) {
+						let re = null
+						try { re = new RegExp(q, cs ? 'g' : 'gi') } catch { re = null }
+						if (re)
+							line_elements.forEach(element => {
+								const text = element.textContent
+								if (! text) return
 								const text_node = element.firstChild
-								if (text_node && text_node.nodeType === Node.TEXT_NODE) {
-									range.setStart(text_node, index)
-									range.setEnd(text_node, index + term.length)
+								if (! text_node || text_node.nodeType !== Node.TEXT_NODE) return
+								re.lastIndex = 0
+								let m
+								while ((m = re.exec(text)) !== null) {
+									if (m.index === re.lastIndex) re.lastIndex++ // avoid an infinite loop on a zero-width match
+									if (! m[0].length) continue
+									const range = new Range()
+									range.setStart(text_node, m.index)
+									range.setEnd(text_node, m.index + m[0].length)
 									ranges.push(range)
 								}
-								index += term.length
-							}
+							})
+					} else {
+						const search_terms = q.split(/\s+/).filter(Boolean).map(t => cs ? t : t.toLowerCase())
+						line_elements.forEach(element => {
+							const text = element.textContent
+							if (! text) return
+							const haystack = cs ? text : text.toLowerCase()
+							search_terms.forEach(term => {
+								let index = 0
+								while ((index = haystack.indexOf(term, index)) !== -1) {
+									const range = new Range()
+									const text_node = element.firstChild
+									if (text_node && text_node.nodeType === Node.TEXT_NODE) {
+										range.setStart(text_node, index)
+										range.setEnd(text_node, index + term.length)
+										ranges.push(range)
+									}
+									index += term.length
+								}
+							})
 						})
-					})
+					}
 					if (ranges.length > 0) {
 						const highlight = new Highlight(...ranges)
 						CSS.highlights.set('search-match', highlight)
@@ -898,7 +976,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, case_sensitive, toggle_case, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, case_sensitive, toggle_case, use_regex, toggle_regex, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

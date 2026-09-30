@@ -456,6 +456,69 @@ module.exports.Indexer = class {
 		return { results, has_more }
 	}
 
+	/** Regex variant of search_lines. The caller extracts the pattern's mandatory literal substrings and
+	 * passes them as `literals`; they drive an FTS trigram prefilter (AND of phrases) so only candidate
+	 * lines are scanned, then each candidate is re-tested against the real RegExp. Requires at least one
+	 * literal — patterns without one use the host ripgrep fallback instead. `case_sensitive` is explicit
+	 * (the search widget's toggle). */
+	search_lines_regex(/** @type {string} */ pattern, /** @type {boolean} */ case_sensitive, /** @type {string[]} */ literals, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[]}} */ filter = {}) {
+		let start = Date.now()
+		if (! literals.length)
+			return { results: [], has_more: false }
+		let re
+		try {
+			re = new RegExp(pattern, case_sensitive ? '' : 'i')
+		} catch (e) {
+			log_debug('search_lines_regex: invalid pattern ' + String(e))
+			return { results: [], has_more: false }
+		}
+		let fts_query = literals.map(l => '"' + l.replace(/"/g, '""') + '"').join(' AND ')
+		let path_ok = build_path_filter(filter)
+		let has_include = !! (filter.include && filter.include.length)
+		let has_exclude = !! (filter.exclude && filter.exclude.length)
+		let has_path_filter = has_include || has_exclude
+		let sql = 'select f.path as path, l.line_no as line_no, l.text as text from line_search_fts_trigram fts inner join line l on l.id = fts.rowid inner join file f on f.id = l.file_id where fts.text match ?'
+		if (has_path_filter) {
+			sql += ' and path_ok(f.path)'
+			this._search_path_ok = path_ok
+		}
+		sql += ' limit ?'
+		this._search_scan_count = 0
+		// Over-fetch: the literal prefilter is necessary but not sufficient (a line can contain the
+		// literals yet not match the full pattern), so scan a larger pool than `limit` to still surface up
+		// to `limit` real regex matches.
+		let scan_cap = limit * 10
+		let rows = this.db.all(sql, [fts_query, scan_cap])
+		this._search_path_ok = null
+		let scanned = this._search_scan_count
+		let t_query = Date.now()
+		/** @type {Map<string, {line_number:number, line_text:string}[]>} */
+		let by_path = new Map()
+		let total_matches = 0
+		let has_more = false
+		let preview_words = literals.map(l => case_sensitive ? l : l.toLowerCase())
+		for (let row of rows) {
+			let text = String(row.text)
+			if (! re.test(text))
+				continue
+			let file_path = String(row.path)
+			let matches = by_path.get(file_path)
+			if (! matches) {
+				matches = []
+				by_path.set(file_path, matches)
+			}
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, preview_words, case_sensitive) })
+			total_matches++
+			if (total_matches >= limit) {
+				has_more = true
+				break
+			}
+		}
+		let results = [...by_path.entries()].map(([path, matches]) => ({ path, matches }))
+		log_debug(`search_lines_regex: ${Date.now() - start}ms (sql+fetch ${t_query - start}ms), fetched ${rows.length}/${scan_cap} rows${has_path_filter ? ` (scanned ${scanned})` : ''} -> ${results.length} files, ${total_matches} matches | fts=${fts_query}`)
+		return { results, has_more }
+	}
+
 	/** Go-to-definition support: lines that contain the exact word, in files where it appears as a whole
 	 * word (via the case-preserved word table). Resolved straight from the line index — no file reads. */
 	find_definition_lines(/** @type {string} */ word, /** @type {number} */ limit) {

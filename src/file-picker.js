@@ -74,10 +74,10 @@ const mtime_bonus_half_life_days = 14
 //   background mtime change, so this is much stronger than mtime_bonus; it decays to 0 over the window.
 const recency_bonus_max = 1500
 const recency_bonus_half_life_days = 1
-// - files living under a well-known dependency/build/vendor directory are almost never what you're
-//   looking for, so they sort below every ordinary match (a dedicated `dep` sort key, applied before
-//   the match-tightness tier). They're still shown, just far down. Matching is by exact path segment,
-//   so `vendor/…` is deprioritised but `vendored_helper.js` is not.
+// - files living under a well-known dependency/build/vendor directory are rarely what you're looking
+//   for, so within an equally-tight match tier they sort below ordinary matches (a `dep` sort key applied
+//   AFTER the match-tightness tier). They still surface when they're a distinctly tighter match than the
+//   alternatives. Matching is by exact path segment, so `vendor/…` is deprioritised but `vendored_helper.js` is not.
 const deprioritized_dir_segments = new Set(['node_modules', 'vendor', 'bower_components', 'dist', 'build', 'out', 'third_party', 'target', '.venv', 'venv', '.next', '.nuxt', '.git', 'coverage', '__pycache__', '.cache'])
 
 /** True if any exact path segment of `p` is a known dependency/build/vendor directory (see
@@ -394,10 +394,12 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 			let is_base_match = base_score !== null && base_score >= min_base_score
 			let score = is_base_match ? /** @type {number} */ (base_score) + 1000 : score_target(tokens, qrel, qrel_lower) // eslint-disable-line no-extra-parens
 			if (score !== null) {
-				// Match-tightness tier — the primary ranking key (after vendor deprioritisation), so contiguous
-				// substring matches decisively beat scattered subsequence ones. 3 = every token is a substring
-				// of the basename, 2 = of the folder-qualified path, 1 = a tight subsequence of the basename,
-				// 0 = subsequence of the path only. `score` still orders within a tier.
+				// Match-tightness tier — the PRIMARY ranking key (above vendor deprioritisation), so contiguous
+				// substring matches decisively beat scattered subsequence ones. A strong match in vendor/ therefore
+				// outranks a scattered one elsewhere (e.g. `vendor third client.php` surfaces the vendored Client.php);
+				// vendor only sinks below an equally-tight non-vendor match. 3 = every token is a substring of the
+				// basename, 2 = of the folder-qualified path, 1 = a tight subsequence of the basename, 0 = subsequence
+				// of the path only. `score` still orders within a tier.
 				let tier
 				if (tokens.every(t => base_lower.includes(t)))
 					tier = 3
@@ -417,11 +419,21 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				let cov_len = dot > 0 && ext_len >= 1 && ext_len <= 4 ? dot : base.length
 				let coverage = is_base_match ? query_len / Math.max(1, cov_len) : 0
 				let rec = recency ? recency.get(p) : 0
-				scored.push({ p, rel, base, tier, dep: is_deprioritized_path(p) ? 1 : 0, score: score + coverage * 1000 + mtime_bonus(mtime) + recency_bonus(rec), recency: rec })
+				// Heavily reward tokens that appear as a CONTIGUOUS substring (not a scattered subsequence):
+				// a longer contiguous run is a far stronger match signal, so weight it by token length squared.
+				// A subsequence-only token earns nothing here, keeping single-letter-spread matches a last
+				// resort even within a tier.
+				let contig_bonus = 0
+				for (let token of tokens)
+					if (base_lower.includes(token))
+						contig_bonus += 200 + token.length * token.length * 30
+					else if (qrel_lower.includes(token))
+						contig_bonus += 80 + token.length * token.length * 12
+				scored.push({ p, rel, base, tier, dep: is_deprioritized_path(p) ? 1 : 0, score: score + contig_bonus + coverage * 1000 + mtime_bonus(mtime) + recency_bonus(rec), recency: rec })
 			}
 		}
-		// vendor/dependency files last, then tighter tiers, then fine-grained score, then recency/length.
-		scored.sort((a, b) => a.dep - b.dep || b.tier - a.tier || b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
+		// tighter tiers first, then non-vendor before vendor within a tier, then fine-grained score, then recency/length.
+		scored.sort((a, b) => b.tier - a.tier || a.dep - b.dep || b.score - a.score || b.recency - a.recency || a.rel.length - b.rel.length)
 		render(scored)
 		log_debug(`file picker: "${query}" \u2014 ${candidates.length} candidate(s) in ${rpc_ms}ms, ${scored.length} matched, showing ${Math.min(scored.length, 500)} \u2014 score+sort ${Date.now() - t_score}ms`)
 	}

@@ -122,6 +122,12 @@ class IndexerClient {
 		return this.call('set_index_params', params)
 	}
 
+	/** Abort the worker's in-flight (re)index at the next sub-batch boundary. Bypasses the write chain so
+	 * it lands immediately; committed work persists and the next sync re-diffs what's left. */
+	cancel_indexing() {
+		return this.call('cancel_indexing')
+	}
+
 	clear_index() {
 		this._file_paths_cache = null
 		return this.call('clear_index')

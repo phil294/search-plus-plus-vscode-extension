@@ -184,9 +184,21 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		status_bar_item_command.text = p == null ? '' : `$(search-fuzzy) 3/3 Indexing ${Math.round(p * 100)}%`
 
 	let is_scanning = false
+	let indexing_in_flight = false // true while a sync_files drain runs in the worker
+	let rescan_after_indexing = false
 	let scan = async () => {
 		if (is_scanning)
 			return log_warn('duplicate scan')
+		// A fresh scan means the in-flight pass is indexing a now-stale file set (e.g. another branch
+		// switch). Cancel it instead of waiting it out: progress is committed per sub-batch so nothing is
+		// lost, and the follow-up sync re-diffs and skips whatever already landed. The cancelled sync's
+		// .finally re-triggers this scan. (Without it, a 10-min index of a branch you already left would
+		// have to finish before the correct scan could even start.)
+		if (indexing_in_flight) {
+			rescan_after_indexing = true
+			indexer_client.cancel_indexing().catch((/** @type any */ e) => log_error('cancel_indexing failed', e))
+			return log_debug('cancelling in-flight indexing to rescan')
+		}
 		is_scanning = true
 		let start = Date.now()
 		log_debug('scanning...')
@@ -237,9 +249,17 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 		// The worker owns the index: it diffs the new file set against what's stored, (re)indexes
 		// changed files and removes files that no longer exist.
 		invalidate_empty_order_cache() // the file set / mtimes may have changed
+		indexing_in_flight = true
 		indexer_client.sync_files(/** @type {FileMeta[]} */ (new_file_metas)) // eslint-disable-line no-extra-parens
 			.then(() => prefetch_file_paths(indexer_client)) // warm the picker's file-list cache so Ctrl+P is instant
 			.catch((/** @type any */ e) => log_error('sync_files failed', e))
+			.finally(() => {
+				indexing_in_flight = false
+				if (rescan_after_indexing) {
+					rescan_after_indexing = false
+					scan_debounced()
+				}
+			})
 	}
 	let scan_debounced = () => debounce(scan, 2500)
 

@@ -52,7 +52,7 @@ function avg_non_empty_line_length(/** @type Buffer */ buf) {
 
 /** @augments {Map<string, FileMeta>} */
 class IndexQueue extends Map {
-	constructor(/** @type Indexer */ indexer, /** @type {{read_group_size?:number, docs_batch_bytes_threshold?:number, max_index_size?:number, max_docs_per_batch?:number, max_avg_line_length?:number, yield_interval_ms?:number, yield_sleep_ms?:number}} */ options = {}) {
+	constructor(/** @type Indexer */ indexer, /** @type {{read_group_size?:number, docs_batch_bytes_threshold?:number, max_index_size?:number, max_docs_per_batch?:number, max_avg_line_length?:number, yield_interval_ms?:number, yield_sleep_ms?:number, flush_target_ms?:number, min_docs_per_flush?:number, docs_per_flush?:number, yield_fn?:()=>Promise<any>}} */ options = {}) {
 		super()
 		this.indexer = indexer
 		this.is_running = false
@@ -69,6 +69,27 @@ class IndexQueue extends Map {
 		this.max_avg_line_length = options.max_avg_line_length ?? default_max_avg_line_length
 		this.yield_interval_ms = options.yield_interval_ms ?? 90
 		this.yield_sleep_ms = options.yield_sleep_ms ?? 7
+		// A single index_docs() call blocks the synchronous worker thread for its whole duration, so one
+		// huge flush froze searches/the picker for the better part of a minute on a large, fragmented
+		// index. Instead each flush is split into sub-batches whose size is steered toward flush_target_ms
+		// of wall-time, yielding the thread between them (yield_fn) so queued read RPCs run first. Bursts
+		// become roughly time-uniform regardless of per-file cost; docs_per_flush starts small and grows
+		// on a healthy index (fast) or stays near min on a slow one (responsive). Clamped to
+		// [min_docs_per_flush, max_docs_per_batch].
+		this.flush_target_ms = options.flush_target_ms ?? 250
+		this.min_docs_per_flush = options.min_docs_per_flush ?? 10
+		this.docs_per_flush = options.docs_per_flush ?? this.min_docs_per_flush
+		// Injected by the worker to hand the thread back to pending reads between DB bursts; a plain
+		// event-loop turn when the queue is used standalone.
+		this.yield_fn = options.yield_fn ?? (() => new Promise(resolve => setImmediate(resolve)))
+		// Set true (via cancel()) to abort an in-flight run() at the next sub-batch / read-group boundary.
+		this.cancelled = false
+	}
+
+	/** Abort the in-flight drain ASAP. Committed sub-batches persist; unread files stay queued and are
+	 * re-diffed by the next sync, so nothing is lost or indexed twice. Used when a fresh scan supersedes. */
+	cancel() {
+		this.cancelled = true
 	}
 
 	add(/** @type FileMeta */ file_meta) {
@@ -90,23 +111,46 @@ class IndexQueue extends Map {
 		let docs_batch = [] // TODO no implcit any
 		const docs_batch_bytes_threshold = this.docs_batch_bytes_threshold
 		let docs_batch_bytes_read = 0
+		// Flush the accumulated docs in time-bounded sub-batches, handing the thread back between each
+		// (yield_fn) so queued read RPCs run promptly instead of waiting out the whole flush. Each
+		// sub-batch is its own index_docs() transaction; its duration steers docs_per_flush toward
+		// flush_target_ms (halve on overshoot, grow when well under budget).
 		let flush_docs_batch = async () => {
-			log_debug(`batch-index ${docs_batch.length} docs`)
 			if (! docs_batch.length)
 				return
-			try {
-				await this.indexer.index_docs(docs_batch)
-			} catch (e) {
-				// shouldn't throw because then is_running won't be unset, and errors, if any, are most likely to occur here
-				log_error('Indexing docs failed unexpectedly: ', e.stack, e)
-				try {
-					this.indexer.db.exec('rollback')
-				} catch (ee) {
-					log_error('rollback on Indexing docs failed unexpectedly: ', ee.stack, ee)
-				}
-			}
-			docs_batch_bytes_read = 0
+			let batch = docs_batch
 			docs_batch = []
+			docs_batch_bytes_read = 0
+			log_debug(`batch-index ${batch.length} docs (~${this.docs_per_flush}/flush)`)
+			let i = 0
+			while (i < batch.length) {
+				if (this.cancelled)
+					break
+				// Capture the size BEFORE processing: the adaptive resize below changes docs_per_flush for
+				// the NEXT burst, and advancing i by a different amount than we sliced would skip/duplicate docs.
+				let n = this.docs_per_flush
+				let sub = batch.slice(i, i + n)
+				i += n
+				let t = Date.now()
+				try {
+					this.indexer.index_docs(sub)
+				} catch (e) {
+					// shouldn't throw because then is_running won't be unset, and errors, if any, are most likely to occur here
+					log_error('Indexing docs failed unexpectedly: ', e.stack, e)
+					try {
+						this.indexer.db.exec('rollback')
+					} catch (ee) {
+						log_error('rollback on Indexing docs failed unexpectedly: ', ee.stack, ee)
+					}
+				}
+				let dur = Date.now() - t
+				if (dur > this.flush_target_ms * 1.5)
+					this.docs_per_flush = Math.max(this.min_docs_per_flush, Math.floor(this.docs_per_flush / 2))
+				else if (dur < this.flush_target_ms * 0.5)
+					this.docs_per_flush = Math.min(this.max_docs_per_batch, Math.ceil(this.docs_per_flush * 1.5))
+				// Hand the thread back so pending read RPCs are dispatched before the next DB burst.
+				await this.yield_fn()
+			}
 		}
 		let uri_i = -1
 		let skipped_path_EACCESS = ''
@@ -116,6 +160,10 @@ class IndexQueue extends Map {
 		let last_pause = Date.now()
 		let last_progress = Date.now()
 		for (let i = 0; i < entries.length; i += read_group_size) {
+			if (this.cancelled) {
+				log_info('index run cancelled; ' + this.size + ' file(s) left queued for the next sync')
+				break
+			}
 			let read_group = entries.slice(i, i + read_group_size) // calling it "group" to distinguish from index-flush "batch"
 			await Promise.all(read_group.map(async ([path, file_meta]) => {
 				this.delete(path)

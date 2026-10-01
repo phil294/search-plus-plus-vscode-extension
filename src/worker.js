@@ -13,14 +13,37 @@ if (! parentPort)
 set_verbose(workerData.verbose)
 const index_params = workerData.index_params || {}
 const indexer = new Indexer({ storage_path: workerData.storage_path })
-const queue = new IndexQueue(indexer, { max_index_size: index_params.max_index_size, max_avg_line_length: index_params.max_avg_line_length })
+
+// Reads bypass the write chain, but better-sqlite3 is synchronous so a read RPC can only run while the
+// index queue has handed the thread back. active_reads counts received-but-unfinished reads; the queue
+// awaits yield_to_reads() between DB bursts, which resolves on the next event-loop turn (letting any
+// queued read messages dispatch) and waits out an in-flight read, so indexing never cuts in ahead of a
+// pending read.
+let active_reads = 0
+/** @returns {Promise<void>} */
+function yield_to_reads() {
+	return new Promise(resolve => {
+		const check = () => {
+			if (active_reads > 0)
+				setImmediate(check)
+			else
+				resolve()
+		}
+		setImmediate(check)
+	})
+}
+
+const queue = new IndexQueue(indexer, { max_index_size: index_params.max_index_size, max_avg_line_length: index_params.max_avg_line_length, yield_fn: yield_to_reads })
 
 let on_progress = (/** @type {number|null} */ value) =>
 	parentPort?.postMessage({ type: 'progress', value })
 
 let draining = false
+// Set when a bulk sync dropped the word indexes; cleared once they're rebuilt. Lets a cancelled bulk
+// sync defer the (full, O(all rows)) rebuild to the follow-up sync instead of doing it then redoing it.
+let word_indexes_dropped = false
 /** Runs the queue until empty. Guards against concurrent runs; files added while running
- * (e.g. from watcher events) are picked up by the trailing loop. */
+ * (e.g. from watcher events) are picked up by the trailing loop. Stops early if the queue is cancelled. */
 async function drain() {
 	if (draining)
 		return
@@ -28,7 +51,7 @@ async function drain() {
 	try {
 		do
 			await queue.run({ on_progress })
-		while (queue.size > 0)
+		while (queue.size > 0 && ! queue.cancelled)
 	} finally {
 		draining = false
 	}
@@ -36,6 +59,9 @@ async function drain() {
 
 /** Full scan reconciliation: (re)index changed files, drop files that no longer exist. */
 async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
+	// Fresh indexing intent: clear any prior cancel BEFORE any await, so a cancel aimed at THIS run (which
+	// the worker processes only at a later await) is honoured rather than reset out from under it.
+	queue.cancelled = false
 	let t_sync = Date.now()
 	let old_meta_docs = indexer.all_meta_docs()
 	/** @type {Record<string,import('./indexer').IndexDoc>} */
@@ -67,28 +93,33 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 	let bulk = queue.size > 5000 && queue.size > existing * 0.5
 	let to_index = queue.size
 	log_info(`sync: ${queue.size} file(s) to (re)index, ${gone.length} gone${bulk ? ', deferred word-index build' : ''}`)
-	if (bulk) {
+	if (bulk && ! word_indexes_dropped) {
 		let t = Date.now()
 		indexer.drop_word_indexes()
+		word_indexes_dropped = true
 		log_info(`drop_word_indexes ${Date.now() - t}ms`)
 	}
 	let t_drain = Date.now()
 	try {
 		await drain()
 	} finally {
-		log_info(`indexing drain done in ${((Date.now() - t_drain) / 1000).toFixed(1)}s`)
-		if (bulk) {
+		log_info(`indexing drain done in ${((Date.now() - t_drain) / 1000).toFixed(1)}s${queue.cancelled ? ' (cancelled)' : ''}`)
+		// Recreate dropped word indexes only once indexing actually completes. On cancel a fresh sync is
+		// imminent and will rebuild; recreating now would be a full O(all rows) pass we'd immediately redo.
+		if (word_indexes_dropped && ! queue.cancelled) {
 			let t = Date.now()
 			indexer.create_word_indexes()
+			word_indexes_dropped = false
 			log_info(`create_word_indexes ${((Date.now() - t) / 1000).toFixed(1)}s`)
 		}
 		indexer.checkpoint()
 	}
-	log_info(`synced ${to_index} file(s) (${gone.length} removed) in ${((Date.now() - t_sync) / 1000).toFixed(1)}s`)
+	log_info(`synced ${to_index} file(s) (${gone.length} removed) in ${((Date.now() - t_sync) / 1000).toFixed(1)}s${queue.cancelled ? ' (cancelled — will rescan)' : ''}`)
 }
 
 /** Index a specific set of files (e.g. from file-watcher change events). */
 async function index_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
+	queue.cancelled = false // fresh indexing intent; clear any prior cancel request
 	for (let meta of metas)
 		queue.add(meta)
 	await drain()
@@ -129,6 +160,7 @@ const methods = {
 	search_lines: (/** @type string */ word, /** @type number */ limit, /** @type any */ filter) => indexer.search_lines(word, limit, filter),
 	search_lines_regex: (/** @type string */ pattern, /** @type boolean */ case_sensitive, /** @type string[] */ literals, /** @type number */ limit, /** @type any */ filter) => indexer.search_lines_regex(pattern, case_sensitive, literals, limit, filter),
 	find_definition_lines: (/** @type string */ word, /** @type number */ limit) => indexer.find_definition_lines(word, limit),
+	cancel_indexing: () => { queue.cancel() },
 	set_verbose: (/** @type boolean */ v) => { set_verbose(v) },
 }
 
@@ -167,9 +199,12 @@ parentPort.on('message', (msg) => {
 	if (write_methods.has(method))
 		// Serialize mutations: run strictly one at a time in arrival order.
 		write_chain = write_chain.then(() => dispatch(id, method, call_args))
-	else
+	else {
 		// Reads bypass the chain so search/autocomplete/picker stay responsive between index batches.
-		dispatch(id, method, call_args)
+		// active_reads lets the index queue yield to them (reads take precedence over indexing).
+		active_reads++
+		dispatch(id, method, call_args).finally(() => { active_reads-- })
+	}
 })
 
 process.on('unhandledRejection', (/** @type any */ err) => {

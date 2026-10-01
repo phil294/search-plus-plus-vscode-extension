@@ -14,6 +14,50 @@ const { readFileSync } = require('fs')
 /** @typedef {import('./indexer').IndexDoc} IndexDoc */
 /** @typedef {import('./indexer').FileMeta} FileMeta */
 
+/** Scans the in-memory text of open editors the on-disk index can't cover — untitled buffers, files with
+ * unsaved changes, and files opened from outside the workspace — so search results include them like the
+ * built-in search. Returns results shaped like search_lines; each carries `uri` so the webview can reopen
+ * untitled/out-of-workspace docs. */
+function scan_open_documents(/** @type string */ query, /** @type {{regex:boolean, case_sensitive:boolean, roots:string[], limit:number}} */ { regex, case_sensitive, roots, limit }) {
+	let q = query.trim()
+	if (! q)
+		return []
+	let tokens = (case_sensitive ? q : q.toLowerCase()).split(/\s+/).filter(Boolean)
+	let re = null
+	if (regex)
+		try {
+			re = new RegExp(q, case_sensitive ? '' : 'i')
+		} catch {
+			return []
+		}
+	let in_workspace = (/** @type string */ p) => roots.some(r => p === r || p.startsWith(r + '/'))
+	let results = []
+	let total = 0
+	for (let doc of vscode.workspace.textDocuments) {
+		if (total >= limit)
+			break
+		let scheme = doc.uri.scheme
+		if (scheme !== 'file' && scheme !== 'untitled')
+			continue
+		// The index already covers saved, in-workspace files; keep only what it can't see.
+		if (scheme === 'file' && ! doc.isDirty && in_workspace(doc.uri.path))
+			continue
+		let lines = doc.getText().split(/\r?\n/)
+		let matches = []
+		for (let i = 0; i < lines.length && total < limit; i++) {
+			let line = lines[i] || ''
+			let hit = re ? re.test(line) : tokens.every(t => (case_sensitive ? line : line.toLowerCase()).includes(t))
+			if (! hit)
+				continue
+			matches.push({ line_number: i + 1, line_text: line.replace(/^\s+/, '').slice(0, 1000) })
+			total++
+		}
+		if (matches.length)
+			results.push({ path: doc.uri.path, uri: doc.uri.toString(), matches })
+	}
+	return results
+}
+
 // Shortest word prefix we run word-autocomplete for. Below this, a `prefix*` index scan matches a huge
 // slice of the vocabulary (slow, blocks the single worker thread) while being barely useful.
 const min_completion_prefix_length = 3
@@ -380,12 +424,22 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			found = await indexer_client.search_lines(params.query, 1000, { include, exclude, roots: folders.map(f => f.uri.path), case_sensitive })
 		if (gen !== search_gen)
 			return
+		// Fold in open editors the index can't see (untitled / unsaved / out-of-workspace), like built-in
+		// search. Fresh in-memory content replaces a stale indexed dupe (dirty files); new docs are appended.
+		let open_docs = scan_open_documents(params.query, { regex: !! params.regex, case_sensitive, roots: folders.map(f => f.uri.path), limit: 1000 })
+		let merged = found.results
+		if (open_docs.length) {
+			let by_path = new Map(found.results.map(r => [r.path, r]))
+			for (let d of open_docs)
+				by_path.set(d.path, d)
+			merged = [...by_path.values()]
+		}
 		webview?.webview.postMessage({
 			type,
 			phase: 'lines',
 			query: params.query,
 			has_more: found.has_more,
-			results: found.results.map(r => ({ ...r, icon: icon_file_name(r.path) })),
+			results: merged.map(r => ({ ...r, icon: icon_file_name(r.path) })),
 			workspace_folders,
 		})
 	}
@@ -425,7 +479,7 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 				else if (message.type === 'log')
 					log_debug('[webview]', ...message.args || [])
 				else if (message.type === 'open_file') {
-					let uri = vscode.Uri.file(message.path)
+					let uri = message.uri ? vscode.Uri.parse(message.uri) : vscode.Uri.file(message.path)
 					let editor = await vscode.window.showTextDocument(uri)
 					if (! message.line_number)
 						return

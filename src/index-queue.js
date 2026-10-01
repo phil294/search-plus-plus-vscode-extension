@@ -138,6 +138,8 @@ class IndexQueue extends Map {
 						log_warn(file_meta.path, e)
 					else if (e.code === 'EACCES')
 						skipped_path_EACCESS = file_meta.path
+					else if (e.code === 'ENOENT') // deleted between enqueue and read (branch switch etc.); already removed above
+						log_debug(`indexing: file vanished before read, skipping ${file_meta.path}`)
 					else
 						// TODO check logs size and when expiring
 						log_error(`Indexing: Unexpected error: Failed to read file '${path}': ${JSON.stringify(e)}`)

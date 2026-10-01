@@ -303,6 +303,26 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		.then(paths => { cached_all_paths = paths; empty_order_cache = null })
 		.catch((/** @type any */ e) => log_error('file picker: background all_file_paths refresh failed', e))
 
+	// Open editors the index doesn't list — untitled buffers and files opened from outside the workspace
+	// (dirty in-workspace files are already in all_paths) — so the picker can jump to them too.
+	/** @type {{path:string, uri:string, base:string, mtime:number}[]} */
+	let extra_docs = []
+	let in_workspace = (/** @type string */ p) => roots.some(r => p === r || p.startsWith(r + '/'))
+	let seen_paths = new Set(all_paths.map(f => f.path))
+	for (let doc of vscode.workspace.textDocuments) {
+		let scheme = doc.uri.scheme
+		if (scheme !== 'file' && scheme !== 'untitled')
+			continue
+		if (scheme === 'file' && in_workspace(doc.uri.path))
+			continue
+		let p = doc.uri.path
+		if (seen_paths.has(p))
+			continue
+		seen_paths.add(p)
+		extra_docs.push({ path: p, uri: doc.uri.toString(), base: basename(p) || 'Untitled', mtime: Date.now() / 1000 })
+	}
+	let extra_uri_by_path = new Map(extra_docs.map(d => [d.path, d.uri]))
+
 	/** @type {NodeJS.Timeout|null} */
 	let search_debounce = null
 	let workspace_token = 0
@@ -332,7 +352,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				description: describe_dir(p, folder_list),
 				iconPath: file_icon(p),
 				alwaysShow: true,
-				_action: { type: 'open', path: p, line: line_no },
+				_action: { type: 'open', path: p, line: line_no, uri: extra_uri_by_path.get(p) },
 			}))
 		}
 
@@ -354,7 +374,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				empty_order_cache = rows.slice(0, 500).map(({ p }) => ({ p, base: basename(p), rel: relativize(p, roots) }))
 				sort_ms = Date.now() - t_sort
 			}
-			render(empty_order_cache)
+			render([...extra_docs.map(d => ({ p: d.path, base: d.base, rel: d.path })), ...empty_order_cache])
 			log_debug(`file picker: empty query, ${all_paths.length} path(s), showing ${empty_order_cache.length} — ${sort_ms === -1 ? 'cached order' : `sorted in ${sort_ms}ms`}`)
 			return
 		}
@@ -372,6 +392,9 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		if (my_token !== file_token)
 			return
 		let rpc_ms = Date.now() - t_rpc
+		// open editors the index can't list still rank through the same scorer
+		if (extra_docs.length)
+			candidates = candidates.concat(extra_docs.map(d => ({ path: d.path, mtime: d.mtime })))
 
 		let t_score = Date.now()
 		let scored = []
@@ -581,7 +604,7 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 			// preview already moved the cursor; just close and keep it
 			return qp.hide()
 		qp.hide()
-		let editor = await vscode.window.showTextDocument(vscode.Uri.file(action.path))
+		let editor = await vscode.window.showTextDocument(action.uri ? vscode.Uri.parse(action.uri) : vscode.Uri.file(action.path))
 		if (action.line) {
 			let pos = new vscode.Position(action.line - 1, 0)
 			editor.selection = new vscode.Selection(pos, pos)

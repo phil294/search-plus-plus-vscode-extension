@@ -568,7 +568,7 @@
 					const rows = flat_rows.value
 					const idx = rows.findIndex(r => r.kind === 'match' && r.fi === fi && r.mi === mi)
 					if (idx !== -1) selected.value = idx
-					vscode.postMessage({ type: 'open_file', path: file.path, line_number: match.line_number })
+					vscode.postMessage({ type: 'open_file', path: file.path, uri: file.uri, line_number: match.line_number })
 				}
 
 				const activate = () => {

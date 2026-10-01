@@ -67,7 +67,8 @@
 			line-height: 16px;
 			padding-top: 2px;
 			padding-bottom: 2px;
-			padding-right: 26px;
+			padding-right: 38px !important;
+			text-overflow: ellipsis;
 		}
 		.input-actions {
 			position: absolute;
@@ -295,13 +296,13 @@
 			<div v-if="show_filters" class="filters">
 				<div class="filter-label">files to include</div>
 				<div class="input-row">
-					<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_search_input" placeholder="e.g. *.js, src/" autocomplete="off" />
+					<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_include_input" @blur="on_include_blur" placeholder="e.g. *.js, src/" autocomplete="off" ref="include_input" />
 					<button class="toggle-filters" :class="{ active: view_mode === 'tree' }" @click="toggle_view_mode" :title="view_mode === 'tree' ? 'View as List' : 'View as Tree'">
 						<i class="codicon" :class="view_mode === 'tree' ? 'codicon-list-tree' : 'codicon-list-flat'"></i>
 					</button>
 				</div>
 				<div class="filter-label">files to exclude</div>
-				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_search_input" placeholder="e.g. *.test.js, dist/" autocomplete="off" />
+				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_exclude_input" @blur="on_exclude_blur" placeholder="e.g. *.test.js, dist/" autocomplete="off" ref="exclude_input" />
 			</div>
 		</div>
 		<div class="search-progress"><div v-show="loading" class="progress-bit"></div></div>
@@ -367,6 +368,8 @@
 				const loading = ref(false)
 				const workspace_folders = ref([])
 				const search_input = ref(null)
+				const include_input = ref(null)
+				const exclude_input = ref(null)
 				const results_container = ref(null)
 				const selected = ref(-1)
 				// Process only this many result FILES on the first paint of a large result set; the rest follow a
@@ -629,18 +632,41 @@
 						toggle_regex()
 						return
 					}
-					// let the include/exclude text inputs handle their own keys normally
-					if (target && target.classList && target.classList.contains('filter-input')) return
+					// include/exclude filters get the same Up/Down history nav and Enter-to-search as the search
+					// box; all other keys behave normally.
+					if (target && target.classList && target.classList.contains('filter-input')) {
+						const hist = target === include_input.value ? include_hist
+							: target === exclude_input.value ? exclude_hist : null
+						if (hist) {
+							if (e.key === 'ArrowUp') {
+								e.preventDefault()
+								hist.prev()
+								return
+							}
+							if (e.key === 'ArrowDown') {
+								e.preventDefault()
+								hist.next()
+								return
+							}
+							if (e.key === 'Enter') {
+								e.preventDefault()
+								hist.push(target.value)
+								do_search()
+								return
+							}
+						}
+						return
+					}
 					const in_search = target === search_input.value
 					switch (e.key) {
 						case 'ArrowDown':
 							e.preventDefault()
-							if (in_search) history_next()
+							if (in_search) search_hist.next()
 							else move(1)
 							break
 						case 'ArrowUp':
 							e.preventDefault()
-							if (in_search) history_prev()
+							if (in_search) search_hist.prev()
 							else move(-1)
 							break
 						case 'Enter':
@@ -686,50 +712,66 @@
 						regex: use_regex.value,
 					})
 				}
-				// Last 100 search queries (most-recent first), navigated with Up/Down in the search box.
-				const HISTORY_KEY = 'search_history'
+				// Independent query histories (most-recent-first, de-duped, capped) for the search box and the
+				// include/exclude filters: Up/Down navigate older/newer, blur commits, typing exits navigation.
 				const HISTORY_MAX = 100
-				let search_history = []
-				try {
-					const stored = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
-					if (Array.isArray(stored)) search_history = stored
-				} catch {
-					search_history = []
+				const move_cursor_end = (el) => nextTick(() => { if (el) el.setSelectionRange(el.value.length, el.value.length) })
+				const make_history = (storage_key, value_ref, get_el) => {
+					let entries = []
+					try {
+						const stored = JSON.parse(localStorage.getItem(storage_key) || '[]')
+						if (Array.isArray(stored)) entries = stored
+					} catch {
+						entries = []
+					}
+					let index = -1 // -1 = editing the live draft, not navigating history
+					let draft = ''
+					const push = (raw) => {
+						const q = raw.trim()
+						index = -1
+						if (! q) return
+						const existing = entries.indexOf(q)
+						if (existing !== -1) entries.splice(existing, 1)
+						entries.unshift(q)
+						if (entries.length > HISTORY_MAX) entries.length = HISTORY_MAX
+						localStorage.setItem(storage_key, JSON.stringify(entries))
+					}
+					const apply = (value) => {
+						value_ref.value = value
+						do_search()
+						move_cursor_end(get_el())
+					}
+					const prev = () => { // older query
+						if (! entries.length || index >= entries.length - 1) return
+						if (index === -1) draft = value_ref.value
+						index++
+						apply(entries[index])
+					}
+					const next = () => { // newer query, back toward the live draft
+						if (index === -1) return
+						index--
+						apply(index === -1 ? draft : entries[index])
+					}
+					const blur = () => {
+						const q = value_ref.value.trim()
+						if (q && q !== entries[0]) push(q)
+					}
+					return { push, prev, next, blur, reset: () => { index = -1 } }
 				}
-				let history_index = -1 // -1 = editing the live draft, not navigating history
-				let history_draft = ''
-				const push_history = (raw) => {
-					const q = raw.trim()
-					history_index = -1
-					if (! q) return
-					const existing = search_history.indexOf(q)
-					if (existing !== -1) search_history.splice(existing, 1)
-					search_history.unshift(q)
-					if (search_history.length > HISTORY_MAX) search_history.length = HISTORY_MAX
-					localStorage.setItem(HISTORY_KEY, JSON.stringify(search_history))
-				}
-				const apply_history_entry = (value) => {
-					search_query.value = value
-					do_search()
-					nextTick(() => {
-						const el = search_input.value
-						if (el) el.setSelectionRange(el.value.length, el.value.length)
-					})
-				}
-				const history_prev = () => { // older query
-					if (! search_history.length || history_index >= search_history.length - 1) return
-					if (history_index === -1) history_draft = search_query.value
-					history_index++
-					apply_history_entry(search_history[history_index])
-				}
-				const history_next = () => { // newer query, back toward the live draft
-					if (history_index === -1) return
-					history_index--
-					apply_history_entry(history_index === -1 ? history_draft : search_history[history_index])
-				}
+				const search_hist = make_history('search_history', search_query, () => search_input.value)
+				const include_hist = make_history('search_include_history', include_query, () => include_input.value)
+				const exclude_hist = make_history('search_exclude_history', exclude_query, () => exclude_input.value)
 				const on_search_input = () => {
-					history_index = -1 // manual typing exits history navigation
+					search_hist.reset() // manual typing exits history navigation
 					t_input = performance.now()
+					schedule_search()
+				}
+				const on_include_input = () => {
+					include_hist.reset()
+					schedule_search()
+				}
+				const on_exclude_input = () => {
+					exclude_hist.reset()
 					schedule_search()
 				}
 				// Coalesce keystrokes: reflect the pending work immediately (progress bar on) but defer the
@@ -746,16 +788,15 @@
 					loading.value = true
 					search_debounce_timer = setTimeout(do_search, 150)
 				}
-				// Leaving the search box commits the current query to history (like a normal search box),
-				// but only when it isn't already the most recent entry.
-				const on_search_blur = () => {
-					const q = search_query.value.trim()
-					if (q && q !== search_history[0]) push_history(q)
-				}
+				// Leaving an input commits its current value to that input's history (like a normal search
+				// box), but only when it isn't already the most recent entry.
+				const on_search_blur = () => search_hist.blur()
+				const on_include_blur = () => include_hist.blur()
+				const on_exclude_blur = () => exclude_hist.blur()
 				// Enter in the search box re-runs the search immediately to refresh stale results and commits
 				// the query to the search history.
 				const trigger_search_now = () => {
-					push_history(search_query.value)
+					search_hist.push(search_query.value)
 					do_search()
 				}
 				// Case sensitivity is an explicit toggle (button / Alt+C); re-run the search and re-highlight.
@@ -976,7 +1017,7 @@
 					if (search_query.value.trim())
 						on_search_input()
 				})
-				return { search_query, include_query, exclude_query, case_sensitive, toggle_case, use_regex, toggle_regex, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
+				return { search_query, include_query, exclude_query, case_sensitive, toggle_case, use_regex, toggle_regex, show_filters, view_mode, toggle_view_mode, results, has_more, loading, result_count_text, search_input, include_input, exclude_input, results_container, selected, flat_rows, dir_collapsed, collapsed_files, results_key, toggle_dir, row_key, on_search_input, on_search_blur, on_include_input, on_exclude_input, on_include_blur, on_exclude_blur, get_file_name, get_dir_path, open_match, toggle_file, is_file_selected, is_match_selected }
 			}
 		}).mount('#app')
 	</script>

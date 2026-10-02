@@ -11,8 +11,12 @@ if (! parentPort)
 	throw new Error('worker.js must be run as a worker_thread')
 
 set_verbose(workerData.verbose)
+// Two instances of this worker run: the 'writer' owns all mutations via its read-write connection; a
+// 'reader' opens a second, read-only connection to the SAME db so searches/the picker run in parallel
+// with a long index write (WAL lets a reader see the last committed snapshot while the writer works).
+const role = workerData.role === 'reader' ? 'reader' : 'writer'
 const index_params = workerData.index_params || {}
-const indexer = new Indexer({ storage_path: workerData.storage_path })
+const indexer = new Indexer({ storage_path: workerData.storage_path, readonly: role === 'reader' })
 
 // Reads bypass the write chain, but better-sqlite3 is synchronous so a read RPC can only run while the
 // index queue has handed the thread back. active_reads counts received-but-unfinished reads; the queue
@@ -210,3 +214,7 @@ parentPort.on('message', (msg) => {
 process.on('unhandledRejection', (/** @type any */ err) => {
 	log_error('worker unhandledRejection', err && (err.stack || err.message || err))
 })
+
+// Signal the host that this connection is up. The host spawns the reader only after the writer is ready
+// (so the db + schema exist) and only routes reads to the reader once it, too, reports ready.
+parentPort.postMessage({ type: 'ready', role })

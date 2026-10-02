@@ -13,9 +13,9 @@ const index_docs_slow_ms = 1500
 // Thin adapter giving better-sqlite3 the call surface the code used with node-sqlite3-wasm:
 // exec(sql), run(sql, params?), all(sql, params?), and prepare(sql) -> { run(values), finalize() }.
 class Db {
-	/** @param {string} db_path */
-	constructor(db_path) {
-		this._db = new BetterSqlite3(db_path)
+	/** @param {string} db_path @param {{readonly?:boolean}} [opts] */
+	constructor(db_path, { readonly = false } = {}) {
+		this._db = new BetterSqlite3(db_path, readonly ? { readonly: true, fileMustExist: true } : {})
 	}
 
 	/** @param {string} sql */
@@ -90,18 +90,19 @@ class Db {
 
 /** wrapper around sqlite3 fts (better-sqlite3). Owned by the indexing worker thread (single db connection). */
 module.exports.Indexer = class {
-	constructor(/** @type {{storage_path:string, rows_per_chunk?:number, min_word_length?:number, extra_pragmas?:string}} */ { storage_path, rows_per_chunk = 500, min_word_length = 3, extra_pragmas = '' }) {
+	constructor(/** @type {{storage_path:string, rows_per_chunk?:number, min_word_length?:number, extra_pragmas?:string, readonly?:boolean}} */ { storage_path, rows_per_chunk = 500, min_word_length = 3, extra_pragmas = '', readonly = false }) {
 		this.word_split_regex = word_split_regex
 		this.rows_per_chunk = rows_per_chunk
 		this.min_word_length = min_word_length
 		this.extra_pragmas = extra_pragmas
+		this.readonly = readonly
 		let index_path = path.join(storage_path, 'index')
 		if (! existsSync(index_path))
 			mkdirSync(index_path, { recursive: true })
 		log_debug('search index: ' + index_path)
 
 		let db_path = path.join(index_path, 'index6.db') // version bump after scheme change
-		this.db = new Db(db_path)
+		this.db = new Db(db_path, { readonly })
 
 		// path_ok() lets search_lines push the include/exclude path filter INTO the SQL, so the LIMIT
 		// counts only rows that actually pass it. Filtering after a LIMIT starved restrictive filters: a
@@ -117,6 +118,12 @@ module.exports.Indexer = class {
 			return 1
 		})
 
+		if (readonly) {
+			// A read-only connection can't create schema or change journal mode (the writer owns those);
+			// only the connection-local pragmas are safe and worth setting.
+			this.init_db_readonly()
+			return
+		}
 		try {
 			this.init_db()
 		} catch (e) {
@@ -163,8 +170,8 @@ module.exports.Indexer = class {
 			pragma foreign_keys = on;
 			pragma synchronous = normal;
 			pragma temp_store = memory;
-			pragma cache_size = -131072;
-			pragma mmap_size = 536870912;
+			pragma cache_size = -262144;
+			pragma mmap_size = 2147483648;
 			${this.extra_pragmas}
 			create table if not exists file(id integer primary key autoincrement, path text unique, mtime number, content_indexed integer);
 			create table if not exists file_content(file_id integer references file(id) on delete cascade on update restrict, word text, word_lower text, primary key (file_id, word)) without rowid;
@@ -179,6 +186,16 @@ module.exports.Indexer = class {
 			create trigger if not exists line_ad after delete on line begin
 				delete from line_search_fts_trigram where rowid = old.id;
 			end;
+		`)
+	}
+
+	/** Read-only connection setup: only connection-local pragmas (no schema/journal writes). The writer
+	 * connection owns the schema; this one reads the last-committed WAL snapshot in parallel with writes. */
+	init_db_readonly() {
+		this.db.exec(`
+			pragma cache_size = -262144;
+			pragma mmap_size = 2147483648;
+			pragma temp_store = memory;
 		`)
 	}
 

@@ -77,8 +77,11 @@ class IndexQueue extends Map {
 		// on a healthy index (fast) or stays near min on a slow one (responsive). Clamped to
 		// [min_docs_per_flush, max_docs_per_batch].
 		this.flush_target_ms = options.flush_target_ms ?? 250
-		this.min_docs_per_flush = options.min_docs_per_flush ?? 10
-		this.docs_per_flush = options.docs_per_flush ?? this.min_docs_per_flush
+		// Floor of 1: when per-file FTS deletes cost ~seconds (fragmented index), a burst MUST be able to
+		// shrink to a single file so a queued read waits out one file's delete, not ten.
+		this.min_docs_per_flush = options.min_docs_per_flush ?? 1
+		// Start above the floor so a healthy (fast) index doesn't warm up one file at a time.
+		this.docs_per_flush = options.docs_per_flush ?? 10
 		// Injected by the worker to hand the thread back to pending reads between DB bursts; a plain
 		// event-loop turn when the queue is used standalone.
 		this.yield_fn = options.yield_fn ?? (() => new Promise(resolve => setImmediate(resolve)))
@@ -145,7 +148,10 @@ class IndexQueue extends Map {
 				}
 				let dur = Date.now() - t
 				if (dur > this.flush_target_ms * 1.5)
-					this.docs_per_flush = Math.max(this.min_docs_per_flush, Math.floor(this.docs_per_flush / 2))
+					// Jump straight to the size that should hit the target (burst time scales ~linearly with
+					// docs), so one pathological burst drops us toward 1 at once instead of halving over many
+					// slow bursts. The `- 1` guarantees progress even when the proportional estimate rounds flat.
+					this.docs_per_flush = Math.max(this.min_docs_per_flush, Math.min(this.docs_per_flush - 1, Math.floor(this.docs_per_flush * this.flush_target_ms / dur)))
 				else if (dur < this.flush_target_ms * 0.5)
 					this.docs_per_flush = Math.min(this.max_docs_per_batch, Math.ceil(this.docs_per_flush * 1.5))
 				// Hand the thread back so pending read RPCs are dispatched before the next DB burst.

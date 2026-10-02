@@ -108,11 +108,11 @@ The first initial indexing !["Indexing" in status bar](./demo/indexing.jpg) per 
 
 Sample data:
 
-[Chromium `de86887c`](https://github.com/chromium/chromium/tree/de86887c26b62e8cbdcfd54f02cec60ce6f0d156), Indexable files: `475,000`, `2.4 GiB`. Folder size: `4.9 GiB`. Initial indexing time: 12 min on Macbook Pro M3, 50 min on an ancient i3. Index size: `12.6 GiB`.
+[Chromium `de86887c`](https://github.com/chromium/chromium/tree/de86887c26b62e8cbdcfd54f02cec60ce6f0d156), Indexable files: `475,000`, `2.4 GiB`. Folder size: `4.9 GiB`. Initial indexing time : 12 min on Macbook Pro M3, 50 min on an ancient i3. Index size: `12.6 GiB`.
 
 A file is considered indexable if...
 
-- it isn't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` settings with the latter taking precedence if conflicting respectively
+- it isn't explicitly excluded with any of `"search.exclude"` / `"files.exclude"`, `"files.watcherExclude"`(¹) or `"search++.watcherExclude"` settings
 - it isn't listed in some `.gitignore`, `.rignore` or `.ignore` file, *unless* configured otherwise with any of `"search.useIgnoreFiles"` / `"search.useGlobalIgnoreFiles"` / `"search++.useIgnoreFiles"` / `"search++.useGlobalIgnoreFiles"`, with the latter ones taking precedence if set
 - it doesn't exceed `"search++.maxIndexSizeMb"` MiBs (default `20`)
 - its average line length doesn't exceed `"search++.maxAverageLineLength"` (default `300`)

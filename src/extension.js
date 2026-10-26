@@ -463,11 +463,33 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 			workspace_folders,
 		})
 	}
+	// Latest-wins single-flight for searches. better-sqlite3 runs each query synchronously on the reader
+	// worker, so firing a search per keystroke queues slow (cold-index) queries the user has already typed
+	// past, each of which must finish before the next starts. Keep at most one search in flight plus one
+	// pending (always the newest); intermediate queries are dropped before they ever reach the worker.
+	let search_in_flight = false
+	/** @type {{params:{query:string, include?:string, exclude?:string, case_sensitive?:boolean, regex?:boolean}, type:'results'|'results_live'}|null} */
+	let pending_search = null
+	let dispatch_search = (/** @type {{query:string, include?:string, exclude?:string, case_sensitive?:boolean, regex?:boolean}} */ params, /** @type {'results'|'results_live'} */ type) => {
+		if (search_in_flight) {
+			pending_search = { params, type } // supersede any earlier pending search; only the newest matters
+			return
+		}
+		search_in_flight = true
+		run_search(params, type).catch((/** @type any */ e) => log_error('search failed', e)).finally(() => {
+			search_in_flight = false
+			if (pending_search) {
+				let next = pending_search
+				pending_search = null
+				dispatch_search(next.params, next.type)
+			}
+		})
+	}
 	// After the index changes, refresh the visible results in place (only when the panel is visible and
 	// there is an active query) so stale matches disappear without the user re-searching.
 	let rerun_search_live = () => {
 		if (webview?.visible && last_search?.query?.trim())
-			run_search(last_search, 'results_live').catch((/** @type any */ e) => log_error('live re-search failed', e))
+			dispatch_search(last_search, 'results_live')
 	}
 	context.subscriptions.push(vscode.window.registerWebviewViewProvider(EXT_ID, {
 		resolveWebviewView(/** @type {vscode.WebviewView} */ webview_view) {
@@ -487,13 +509,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 					last_search = { query: message.query, include: message.include, exclude: message.exclude, case_sensitive: !! message.case_sensitive, regex: !! message.regex }
 					if (! message.query?.trim()) {
 						search_gen++ // cancel any in-flight phase-2 from a previous query
+						pending_search = null // drop any queued search; we're clearing
 						if (active_rg_abort) {
 							active_rg_abort.abort()
 							active_rg_abort = null
 						}
 						return webview?.webview.postMessage({ type: 'results', phase: 'lines', query: message.query || '', results: [], has_more: false, workspace_folders: [] })
 					}
-					await run_search(last_search, 'results')
+					dispatch_search(last_search, 'results')
 				} else if (message.type === 'has_results')
 					vscode.commands.executeCommand('setContext', 'search++.hasResults', !! message.value)
 				else if (message.type === 'log')

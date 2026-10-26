@@ -778,10 +778,10 @@
 				// actual search so fast typing sends one request, not one per character. Clearing is instant.
 				const schedule_search = () => {
 					clearTimeout(search_debounce_timer)
-					// Only regex is debounced: it can fall back to a slow ripgrep scan, so coalescing keystrokes
-					// avoids firing a heavy search per character. Plain FTS searches are fast, so run them
-					// immediately for instant feedback. An empty query always clears instantly.
-					if (! use_regex.value || ! search_query.value.trim()) {
+					// Debounce every live search: on a cold index even a plain FTS lookup can take 1-2s, so firing
+					// one per keystroke stacks a queue of slow queries the user has already typed past (regex can
+					// also fall back to a slow ripgrep scan). An empty query always clears instantly.
+					if (! search_query.value.trim()) {
 						do_search()
 						return
 					}

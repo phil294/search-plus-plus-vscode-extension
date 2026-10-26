@@ -616,7 +616,8 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 		// restore the editor if the user cancelled after we moved the cursor for preview
 		if (! accepted && preview_editor && original_selection)
 			preview_editor.selection = original_selection
-		if (preserve_input)
+		// Only remember the query when the user actually submitted it; cancelling keeps the previous value.
+		if (preserve_input && accepted)
 			last_input_by_mode.set(input_key, qp.value)
 		qp.dispose()
 	})

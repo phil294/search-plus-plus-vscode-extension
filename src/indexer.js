@@ -571,12 +571,23 @@ function expand_glob(/** @type string */ token) {
 	token = token.trim()
 	if (! token)
 		return []
-	if (token.startsWith('./'))
+	let anchored = false
+	if (token.startsWith('./')) {
 		token = token.slice(2)
-	else if (token.startsWith('/'))
+		anchored = true
+	} else if (token.startsWith('/')) {
 		token = token.slice(1)
-	if (token.includes('/'))
-		return [token, token.endsWith('/') ? token + '**' : token + '/**']
+		anchored = true
+	}
+	if (! token)
+		return []
+	if (token.includes('/')) {
+		// A path with a slash matches at any depth like VSCode (`b/c` also matches `a/b/c/d`), unless the
+		// user anchored it to the workspace root with a leading `/` or `./`.
+		let prefix = anchored ? '' : '**/'
+		let base = token.endsWith('/') ? token.slice(0, -1) : token
+		return [prefix + base, prefix + base + '/**']
+	}
 	// no slash: a folder/file segment name and/or a filename glob
 	if (token.includes('*'))
 		return ['**/' + token]

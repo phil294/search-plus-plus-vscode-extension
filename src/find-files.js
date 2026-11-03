@@ -171,12 +171,22 @@ function to_rg_globs(/** @type string */ token) {
 	token = token.trim()
 	if (! token)
 		return []
-	if (token.startsWith('./'))
+	let anchored = false
+	if (token.startsWith('./')) {
 		token = token.slice(2)
-	else if (token.startsWith('/'))
+		anchored = true
+	} else if (token.startsWith('/')) {
 		token = token.slice(1)
-	if (token.includes('/'))
-		return token.endsWith('/') ? [token + '**'] : [token, token + '/**']
+		anchored = true
+	}
+	if (! token)
+		return []
+	if (token.includes('/')) {
+		// Match at any depth like VSCode (`b/c` also matches `a/b/c/d`) unless anchored with `/` or `./`.
+		let prefix = anchored ? '' : '**/'
+		let base = token.endsWith('/') ? token.slice(0, -1) : token
+		return [prefix + base, prefix + base + '/**']
+	}
 	if (token.includes('*'))
 		return ['**/' + token]
 	let globs = ['**/' + token + '/**', '**/' + token]

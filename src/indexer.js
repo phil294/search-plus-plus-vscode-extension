@@ -10,6 +10,16 @@ const BetterSqlite3 = require('better-sqlite3')
 // are visible without flooding the log on healthy batches.
 const index_docs_slow_ms = 1500
 
+// Upper bound on a search query / regex literal fed to the trigram FTS. A pasted huge string (e.g. a
+// whole file) would otherwise become a trigram phrase of tens of thousands of terms, and FTS5 loads and
+// intersects the position lists of every term across the whole index -> unbounded memory (OOM). The FTS
+// is only a prefilter (line_re / the real RegExp re-check each candidate line), so bounding what it sees
+// never drops a real match. 1000 chars is far beyond any real "find in files" query (verified safe).
+const MAX_QUERY_LEN = 1000
+// And a cap on how many whitespace-separated tokens drive the FTS phrase, so pasting a file full of
+// spaces can't AND together thousands of phrases. The full token set is still enforced by the re-check.
+const MAX_FTS_TOKENS = 32
+
 // Thin adapter giving better-sqlite3 the call surface the code used with node-sqlite3-wasm:
 // exec(sql), run(sql, params?), all(sql, params?), and prepare(sql) -> { run(values), finalize() }.
 class Db {
@@ -415,6 +425,7 @@ module.exports.Indexer = class {
 	 * picker/panel include/exclude/roots globs per path. */
 	search_lines(/** @type {string} */ word, /** @type {number} */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[], case_sensitive?:boolean}} */ filter = {}) {
 		let start = Date.now()
+		word = String(word).slice(0, MAX_QUERY_LEN) // guard against an OOM-inducing trigram phrase (see MAX_QUERY_LEN)
 		let fts_query = build_fts_query(word)
 		if (! fts_query)
 			return { results: [], has_more: false }
@@ -489,7 +500,7 @@ module.exports.Indexer = class {
 			log_debug('search_lines_regex: invalid pattern ' + String(e))
 			return { results: [], has_more: false }
 		}
-		let fts_query = literals.map(l => '"' + l.replace(/"/g, '""') + '"').join(' AND ')
+		let fts_query = literals.map(l => '"' + l.slice(0, MAX_QUERY_LEN).replace(/"/g, '""') + '"').slice(0, MAX_FTS_TOKENS).join(' AND ')
 		let path_ok = build_path_filter(filter)
 		let has_include = !! (filter.include && filter.include.length)
 		let has_exclude = !! (filter.exclude && filter.exclude.length)
@@ -561,8 +572,8 @@ module.exports.Indexer = class {
  * syntax error; quoting each whitespace token as a string literal (doubling internal quotes) turns it
  * into a substring phrase under the trigram tokenizer. Returns '' when the query has no usable tokens. */
 function build_fts_query(/** @type string */ word) {
-	return word.trim().split(/\s+/).filter(Boolean)
-		.map(t => '"' + t.replace(/"/g, '""') + '"').join(' ')
+	return word.trim().split(/\s+/).filter(Boolean).slice(0, MAX_FTS_TOKENS)
+		.map(t => '"' + t.slice(0, MAX_QUERY_LEN).replace(/"/g, '""') + '"').join(' ')
 }
 
 /** Turns one user-entered "files to include/exclude" token into an array of micromatch globs,

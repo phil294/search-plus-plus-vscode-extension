@@ -283,7 +283,7 @@
 		<div class="search-container">
 			<div class="input-row">
 				<div class="search-input-wrap">
-					<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" ref="search_input" />
+					<input type="text" class="vscode-textfield search-input" v-model="search_query" @input="on_search_input" @blur="on_search_blur" placeholder="Search..." autocomplete="off" maxlength="1000" ref="search_input" />
 					<div class="input-actions">
 						<button class="input-toggle" :class="{ active: case_sensitive }" @mousedown.prevent @click="toggle_case" title="Match Case (Alt+C)" tabindex="-1">Aa</button>
 						<button class="input-toggle" :class="{ active: use_regex }" @mousedown.prevent @click="toggle_regex" title="Use Regular Expression (Alt+R)" tabindex="-1">.*</button>
@@ -296,13 +296,13 @@
 			<div v-if="show_filters" class="filters">
 				<div class="filter-label">files to include</div>
 				<div class="input-row">
-					<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_include_input" @blur="on_include_blur" placeholder="e.g. *.js, src/" autocomplete="off" ref="include_input" />
+					<input type="text" class="vscode-textfield filter-input" v-model="include_query" @input="on_include_input" @blur="on_include_blur" placeholder="e.g. *.js, src/" autocomplete="off" maxlength="1000" ref="include_input" />
 					<button class="toggle-filters" :class="{ active: view_mode === 'tree' }" @click="toggle_view_mode" :title="view_mode === 'tree' ? 'View as List' : 'View as Tree'">
 						<i class="codicon" :class="view_mode === 'tree' ? 'codicon-list-tree' : 'codicon-list-flat'"></i>
 					</button>
 				</div>
 				<div class="filter-label">files to exclude</div>
-				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_exclude_input" @blur="on_exclude_blur" placeholder="e.g. *.test.js, dist/" autocomplete="off" ref="exclude_input" />
+				<input type="text" class="vscode-textfield filter-input" v-model="exclude_query" @input="on_exclude_input" @blur="on_exclude_blur" placeholder="e.g. *.test.js, dist/" autocomplete="off" maxlength="1000" ref="exclude_input" />
 			</div>
 		</div>
 		<div class="search-progress"><div v-show="loading" class="progress-bit"></div></div>

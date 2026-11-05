@@ -117,6 +117,7 @@ async function sync_files(/** @type {import('./indexer').FileMeta[]} */ metas) {
 			log_info(`create_word_indexes ${((Date.now() - t) / 1000).toFixed(1)}s`)
 		}
 		indexer.checkpoint()
+		indexer.maybe_incremental_vacuum()
 	}
 	log_info(`synced ${to_index} file(s) (${gone.length} removed) in ${((Date.now() - t_sync) / 1000).toFixed(1)}s${queue.cancelled ? ' (cancelled — will rescan)' : ''}`)
 }
@@ -128,6 +129,7 @@ async function index_files(/** @type {import('./indexer').FileMeta[]} */ metas) 
 		queue.add(meta)
 	await drain()
 	indexer.checkpoint()
+	indexer.maybe_incremental_vacuum()
 }
 
 async function delete_paths(/** @type {string[]} */ paths) {

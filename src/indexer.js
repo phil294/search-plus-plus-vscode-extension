@@ -20,6 +20,16 @@ const MAX_QUERY_LEN = 1000
 // spaces can't AND together thousands of phrases. The full token set is still enforced by the re-check.
 const MAX_FTS_TOKENS = 32
 
+// Heavy delete/insert churn (every branch switch re-indexes tens of thousands of files) piles freed
+// pages onto the freelist, and without auto_vacuum SQLite never hands them back to the OS — the file
+// only ratchets up to its high-water mark (observed: 4.5 -> 11 GiB). A full VACUUM reclaims it but
+// rewrites the whole file (minutes on a multi-GB index). Instead we create the db with auto_vacuum =
+// incremental and, after a sync, hand back the freelist once it exceeds this fraction of the file.
+const incremental_vacuum_min_free_ratio = 0.1
+// Cap pages reclaimed per call so a single post-sync reclaim can't stall the writer for long; the rest
+// drains over subsequent syncs. 50000 * 8 KiB page ~= 390 MiB per call.
+const incremental_vacuum_max_pages = 50000
+
 // Thin adapter giving better-sqlite3 the call surface the code used with node-sqlite3-wasm:
 // exec(sql), run(sql, params?), all(sql, params?), and prepare(sql) -> { run(values), finalize() }.
 class Db {
@@ -176,6 +186,7 @@ module.exports.Indexer = class {
 		//                   the fts updated delete from `line` explicitly (see delete_doc_by_path).
 		this.db.exec(`
 			pragma page_size = 8192;
+			pragma auto_vacuum = incremental;
 			pragma journal_mode = wal;
 			pragma foreign_keys = on;
 			pragma synchronous = normal;
@@ -223,9 +234,12 @@ module.exports.Indexer = class {
 	/** Wipe every indexed file and its content. Used by the manual "Rebuild Index" command so the next
 	 * full scan reindexes from scratch. file_content and line rows cascade via the foreign key; the
 	 * contentless FTS is cleared explicitly (a cascade delete of `line` does not fire the sync trigger
-	 * because recursive_triggers is off). */
+	 * because recursive_triggers is off). A db created before auto_vacuum was enabled can't switch mode
+	 * without a VACUUM, so we do it here while the db is empty (near-instant): the rebuilt index then
+	 * stays compact as the freelist is handed back after each sync (see maybe_incremental_vacuum). */
 	clear_all() {
 		this.db.exec('delete from line_search_fts_trigram; delete from file;')
+		this.db.exec('pragma auto_vacuum = incremental; vacuum;')
 	}
 
 	/** Folds the WAL back into the main db file. Passive auto-checkpointing alone can lag far behind
@@ -235,6 +249,20 @@ module.exports.Indexer = class {
 		let t = Date.now()
 		let result = this.db.get('pragma wal_checkpoint(TRUNCATE)')
 		log_debug(`wal_checkpoint(TRUNCATE) ${Date.now() - t}ms`, result)
+	}
+
+	/** Hand the accumulated freelist back to the OS after a sync, bounded so the writer never stalls
+	 * long (the rest drains over later syncs). Only runs once the freelist exceeds a fraction of the
+	 * file, so a near-compact db is left alone. No-op on a db created without auto_vacuum = incremental
+	 * (a pre-existing index6.db stays as-is until the "Rebuild Index" command converts it). */
+	maybe_incremental_vacuum() {
+		let page_count = Number(this.db.get('pragma page_count').page_count)
+		let freelist = Number(this.db.get('pragma freelist_count').freelist_count)
+		if (! page_count || freelist / page_count < incremental_vacuum_min_free_ratio)
+			return
+		let t = Date.now()
+		this.db.exec(`pragma incremental_vacuum(${incremental_vacuum_max_pages})`)
+		log_info(`incremental_vacuum: ${freelist} free pages, reclaimed up to ${incremental_vacuum_max_pages} in ${Date.now() - t}ms`)
 	}
 
 	index_docs(/** @type {IndexDoc[]} */ docs) {

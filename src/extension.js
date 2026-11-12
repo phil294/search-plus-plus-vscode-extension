@@ -563,12 +563,19 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 						}
 					} else if (q) {
 						let terms = q.split(/\s+/).filter(Boolean).map(t => case_sensitive ? t : t.toLowerCase())
-						let full = case_sensitive ? editor.document.getText() : editor.document.getText().toLowerCase()
-						for (let term of terms) {
-							let idx = 0
-							while ((idx = full.indexOf(term, idx)) !== -1) {
-								ranges.push(new vscode.Range(editor.document.positionAt(idx), editor.document.positionAt(idx + term.length)))
-								idx += term.length
+						// Plain search matches a line containing ALL terms (AND), so only highlight terms on
+						// lines that actually match — a global per-term scan lit up every stray `>` or `0`.
+						let doc = editor.document
+						for (let ln = 0; ln < doc.lineCount; ln++) {
+							let hay = case_sensitive ? doc.lineAt(ln).text : doc.lineAt(ln).text.toLowerCase()
+							if (! terms.every(t => hay.includes(t)))
+								continue
+							for (let term of terms) {
+								let idx = 0
+								while ((idx = hay.indexOf(term, idx)) !== -1) {
+									ranges.push(new vscode.Range(ln, idx, ln, idx + term.length))
+									idx += term.length
+								}
 							}
 						}
 						let line_text = case_sensitive ? editor.document.lineAt(line).text : editor.document.lineAt(line).text.toLowerCase()

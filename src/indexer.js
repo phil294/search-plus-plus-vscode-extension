@@ -3,6 +3,7 @@ const { mkdirSync, existsSync, rmSync } = require('fs')
 const micromatch = require('micromatch')
 const { log_debug, log_info, log_error, log_warn } = require('./log')
 const { word_split_regex } = require('./global')
+const { line_preview, plain_match_index } = require('./util')
 const BetterSqlite3 = require('better-sqlite3')
 
 // A single index_docs() call blocks the worker thread synchronously (better-sqlite3 is sync).
@@ -500,7 +501,7 @@ module.exports.Indexer = class {
 				matches = []
 				by_path.set(file_path, matches)
 			}
-			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, words_match, case_sensitive) })
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, plain_match_index(text, words_match, case_sensitive)) })
 			total_matches++
 			if (total_matches >= limit) {
 				has_more = true
@@ -552,7 +553,6 @@ module.exports.Indexer = class {
 		let by_path = new Map()
 		let total_matches = 0
 		let has_more = false
-		let preview_words = literals.map(l => case_sensitive ? l : l.toLowerCase())
 		for (let row of rows) {
 			let text = String(row.text)
 			if (! re.test(text))
@@ -563,7 +563,7 @@ module.exports.Indexer = class {
 				matches = []
 				by_path.set(file_path, matches)
 			}
-			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, preview_words, case_sensitive) })
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, re.exec(text)?.index ?? -1) })
 			total_matches++
 			if (total_matches >= limit) {
 				has_more = true
@@ -589,7 +589,7 @@ module.exports.Indexer = class {
 				matches = []
 				by_path.set(file_path, matches)
 			}
-			matches.push({ line_number: Number(row.line_no), line_text: line_preview(String(row.text), [word], true) })
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(String(row.text), String(row.text).indexOf(word)) })
 		}
 		return { results: [...by_path.entries()].map(([path, matches]) => ({ path, matches })), has_more: false }
 	}
@@ -635,25 +635,6 @@ function expand_glob(/** @type string */ token) {
 		// bare extension like ".js" -> match any file ending in it
 		globs.push('**/*' + token)
 	return globs
-}
-
-function line_preview(/** @type string */ line, /** @type string[] */ words, /** @type boolean */ case_sensitive) {
-	// strip leading whitespace (matches VS Code's search result preview)
-	let trimmed = line.replace(/^\s+/, '')
-	let haystack = case_sensitive ? trimmed : trimmed.toLowerCase()
-	// find the earliest match position among all search words
-	let first = -1
-	for (let word of words) {
-		let idx = haystack.indexOf(word)
-		if (idx !== -1 && (first === -1 || idx < first))
-			first = idx
-	}
-	// if there is a lot of text before the first match, show at most 27 chars
-	// of leading context prefixed with an ellipsis so the match stays visible
-	const max_before = 27
-	let preview = first > max_before ? '...' + trimmed.slice(first - max_before) : trimmed
-	// cap length so huge minified/bundled lines can't overwhelm the webview
-	return preview.slice(0, 1000)
 }
 
 function relativize(/** @type string */ p, /** @type {string[]|undefined} */ roots) {

@@ -891,20 +891,29 @@
 							})
 					} else {
 						const search_terms = q.split(/\s+/).filter(Boolean).map(t => cs ? t : t.toLowerCase())
+						// Prefer the whole query as one run (terms in order, optional whitespace between); fall back to per-term.
+						const seq_re = new RegExp(search_terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'), cs ? 'g' : 'gi')
 						line_elements.forEach(element => {
 							const text = element.textContent
 							if (! text) return
+							const text_node = element.firstChild
+							if (! text_node || text_node.nodeType !== Node.TEXT_NODE) return
+							const add = (start, end) => {
+								const range = new Range()
+								range.setStart(text_node, start)
+								range.setEnd(text_node, end)
+								ranges.push(range)
+							}
+							const seq = [...text.matchAll(seq_re)]
+							if (seq.length) {
+								seq.forEach(m => add(m.index, m.index + m[0].length))
+								return
+							}
 							const haystack = cs ? text : text.toLowerCase()
 							search_terms.forEach(term => {
 								let index = 0
 								while ((index = haystack.indexOf(term, index)) !== -1) {
-									const range = new Range()
-									const text_node = element.firstChild
-									if (text_node && text_node.nodeType === Node.TEXT_NODE) {
-										range.setStart(text_node, index)
-										range.setEnd(text_node, index + term.length)
-										ranges.push(range)
-									}
+									add(index, index + term.length)
 									index += term.length
 								}
 							})

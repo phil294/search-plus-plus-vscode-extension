@@ -3,6 +3,7 @@ const { existsSync, readdirSync } = require('fs')
 const path = require('path')
 let vscode = require('vscode')
 const { log_debug, log_error } = require('./log')
+const { line_preview } = require('./util')
 
 // ripgrep binary path, resolved lazily + memoised. We deliberately do NOT bundle our own rg: VS Code
 // already ships one built for the user's exact platform, so reusing it is universal and keeps the VSIX
@@ -299,7 +300,10 @@ function rg_content(/** @type import('vscode').WorkspaceFolder */ folder, /** @t
 				if (rel == null || text == null) // non-UTF8 path/line (reported as bytes) — skip
 					continue
 				let abs = path.isAbsolute(rel) ? rel : path.join(cwd, rel)
-				let preview = text.replace(/\r?\n$/, '').replace(/^\s+/, '').slice(0, 1000)
+				let byte_start = obj.data?.submatches?.[0]?.start
+				// rg reports byte offsets; convert to a char index
+				let at = byte_start == null ? -1 : Buffer.from(text).subarray(0, byte_start).toString().length
+				let preview = line_preview(text.replace(/\r?\n$/, ''), at)
 				on_match({ path: vscode.Uri.file(abs).path, line_number: obj.data.line_number, line_text: preview })
 				if (++count >= max) {
 					capped = true

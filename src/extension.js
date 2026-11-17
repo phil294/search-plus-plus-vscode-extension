@@ -1,5 +1,5 @@
 let vscode = require('vscode')
-let { debounce, sleep, extract_required_literals } = require('./util')
+let { debounce, sleep, extract_required_literals, line_preview, plain_match_index } = require('./util')
 const { makeRe } = require('micromatch')
 const { stat } = require('fs/promises')
 const { log_debug, log_info, log_error, log_warn, set_verbose } = require('./log')
@@ -49,7 +49,7 @@ function scan_open_documents(/** @type string */ query, /** @type {{regex:boolea
 			let hit = re ? re.test(line) : tokens.every(t => (case_sensitive ? line : line.toLowerCase()).includes(t))
 			if (! hit)
 				continue
-			matches.push({ line_number: i + 1, line_text: line.replace(/^\s+/, '').slice(0, 1000) })
+			matches.push({ line_number: i + 1, line_text: line_preview(line, re ? re.exec(line)?.index ?? -1 : plain_match_index(line, tokens, case_sensitive)) })
 			total++
 		}
 		if (matches.length)
@@ -566,10 +566,23 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 						// Plain search matches a line containing ALL terms (AND), so only highlight terms on
 						// lines that actually match — a global per-term scan lit up every stray `>` or `0`.
 						let doc = editor.document
+						// Prefer the whole query as one run (terms in order, optional whitespace between); fall back to per-term.
+						let seq_re = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'), case_sensitive ? 'g' : 'gi')
 						for (let ln = 0; ln < doc.lineCount; ln++) {
-							let hay = case_sensitive ? doc.lineAt(ln).text : doc.lineAt(ln).text.toLowerCase()
+							let text = doc.lineAt(ln).text
+							let hay = case_sensitive ? text : text.toLowerCase()
 							if (! terms.every(t => hay.includes(t)))
 								continue
+							let seq = [...text.matchAll(seq_re)]
+							if (seq.length) {
+								for (let m of seq)
+									ranges.push(new vscode.Range(ln, m.index, ln, m.index + m[0].length))
+								if (ln === line) {
+									col = /** @type {number} */ (seq[0]?.index) // eslint-disable-line no-extra-parens
+									len = seq[0]?.[0].length || 0
+								}
+								continue
+							}
 							for (let term of terms) {
 								let idx = 0
 								while ((idx = hay.indexOf(term, idx)) !== -1) {
@@ -579,13 +592,14 @@ module.exports.activate = async (/** @type vscode.ExtensionContext */context) =>
 							}
 						}
 						let line_text = case_sensitive ? editor.document.lineAt(line).text : editor.document.lineAt(line).text.toLowerCase()
-						for (let term of terms) {
-							let c = line_text.indexOf(term)
-							if (c !== -1 && (col === -1 || c < col)) {
-								col = c
-								len = term.length
+						if (col === -1)
+							for (let term of terms) {
+								let c = line_text.indexOf(term)
+								if (c !== -1 && (col === -1 || c < col)) {
+									col = c
+									len = term.length
+								}
 							}
-						}
 					}
 					editor.setDecorations(match_highlight_decoration, ranges)
 					let selection = col === -1

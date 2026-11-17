@@ -19,6 +19,47 @@ module.exports.debounce = (/** @type {()=>any} */ fun, /** @type number */ time)
 module.exports.sleep = (/** @type number */ ms) =>
 	new Promise(r => setTimeout(r, ms))
 
+/** Where a plain (non-regex) query matches in a line: the whole query as one in-order run (optional
+ * whitespace between terms) if present, else the earliest single term; -1 if none. */
+module.exports.plain_match_index = (/** @type string */ text, /** @type string[] */ terms, /** @type boolean */ case_sensitive) => {
+	let seq = new RegExp(terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'), case_sensitive ? '' : 'i').exec(text)
+	if (seq)
+		return seq.index
+	let hay = case_sensitive ? text : text.toLowerCase()
+	let first = -1
+	for (let term of terms) {
+		let idx = hay.indexOf(case_sensitive ? term : term.toLowerCase())
+		if (idx !== -1 && (first === -1 || idx < first))
+			first = idx
+	}
+	return first
+}
+
+/** Result preview like VS Code's search view (its `lcut(before, 26, '…')`): leading whitespace stripped
+ * and the text before the match (at index `at`, -1 = unknown) cut back at a word boundary. */
+module.exports.line_preview = (/** @type string */ line, /** @type number */ at) => {
+	const max_before = 26
+	if (at < 0)
+		return line.trimStart().slice(0, 1000)
+	let full_before = line.slice(0, at).trimStart()
+	let before = full_before
+	if (before.length >= max_before) {
+		// only boundaries near the cut matter; bound the scan so huge minified lines stay cheap
+		let window = before.slice(-(max_before + 100))
+		let re = /\b/g
+		let i = 0
+		while (re.test(window)) {
+			if (window.length - re.lastIndex < max_before)
+				break
+			i = re.lastIndex
+			re.lastIndex += 1
+		}
+		let cut = window.slice(i).trimStart()
+		before = cut.length < full_before.length ? '...' + cut : cut
+	}
+	return (before + line.slice(at)).slice(0, 1000)
+}
+
 /** Extracts the mandatory, contiguous literal substrings (each >= min_len chars) that MUST appear in
  * every string a regex matches, for use as an FTS trigram prefilter. Deliberately paranoid: it handles
  * only a flat concatenation of literals, character classes, quantifiers and anchors, and BAILS OUT

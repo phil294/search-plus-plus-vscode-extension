@@ -830,6 +830,8 @@
 				}
 
 				watch(show_filters, (v) => localStorage.setItem('search_show_filters', v ? '1' : '0'))
+				// expanding/switching view re-creates the match rows; their highlight ranges must be rebuilt
+				watch([collapsed_files, dir_collapsed, view_mode], () => highlight_search_terms(), { deep: true, flush: 'post' })
 				watch(() => results.value.length, (len) =>
 					vscode.postMessage({ type: 'has_results', value: len > 0 }))
 

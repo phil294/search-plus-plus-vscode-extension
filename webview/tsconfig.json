@@ -1,0 +1,10 @@
+{
+	// Same compiler rules as the extension (inherited 100%); only the runtime environment differs.
+	"extends": "../tsconfig.json",
+	"include": ["."],
+	"exclude": [],
+	"compilerOptions": {
+		"types": [],
+		"lib": ["esnext", "dom", "dom.iterable"]
+	}
+}

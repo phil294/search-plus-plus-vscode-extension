@@ -20,6 +20,7 @@ jsconfig.json
 CONTRIBUTING.md
 vsix-out
 **/*.d.ts
+webview/tsconfig.json
 eslint.config.js
 eslint.config.mjs
 src

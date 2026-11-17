@@ -7,6 +7,7 @@ neostandard({})
 		{ ignores: ['.vscode/.history', 'todo*', 'node_modules', 'vsix-out', 'src/lib'] },
 		{ files: ['**/*.js'], languageOptions: { sourceType: 'commonjs' } },
 		{ languageOptions: { globals: { ...globals.node } } },
+		{ files: ['webview/**/*.js'], languageOptions: { sourceType: 'module', globals: { ...globals.browser, acquireVsCodeApi: 'readonly' } } },
 		{
 			rules: {
 				'prefer-const': 'off',

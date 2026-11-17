@@ -655,12 +655,20 @@ function build_path_filter(/** @type {{include?:string[], exclude?:string[], roo
 	let exclude_globs = (exclude || []).flatMap(expand_glob)
 	if (! include_globs.length && ! exclude_globs.length)
 		return () => true
+	// isMatch() recompiles the globs on every call (~50x slower); this runs once per FTS hit, so precompile
+	let inc = include_globs.map(g => micromatch.matcher(g, { dot: true }))
+	let exc = exclude_globs.map(g => micromatch.matcher(g, { dot: true }))
+	let is_included = (/** @type string */ rel) => ! inc.length || inc.some(m => m(rel))
+	let is_excluded = (/** @type string */ rel) => exc.some(m => m(rel))
+	/** @type {Map<string, boolean>} */
+	let cache = new Map() // many hits share a file
 	return (/** @type string */ p) => {
-		let rel = relativize(p, roots)
-		if (include_globs.length && ! micromatch.isMatch(rel, include_globs, { dot: true }))
-			return false
-		if (exclude_globs.length && micromatch.isMatch(rel, exclude_globs, { dot: true }))
-			return false
-		return true
+		let ok = cache.get(p)
+		if (ok === undefined) {
+			let rel = relativize(p, roots)
+			ok = is_included(rel) && ! is_excluded(rel)
+			cache.set(p, ok)
+		}
+		return ok
 	}
 }

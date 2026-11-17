@@ -516,18 +516,17 @@ async function show_file_picker(indexer_client, { mode, recency, extension_uri }
 				let lines_ms = Date.now() - t_lines
 				/** @type {any[]} */
 				let items = []
-				for (let r of results) {
-					for (let match of r.matches) {
-						items.push({
-							label: match.line_text.trim() || '(blank line)',
-							description: relativize(r.path, roots) + ':' + match.line_number,
-							iconPath: file_icon(r.path),
-							alwaysShow: true,
-							_action: { type: 'open', path: r.path, line: match.line_number },
-						})
-						if (items.length >= 2000)
-							break
-					}
+				// one flat list: best lines first; the stable sort keeps the indexer's file ranking as tiebreak
+				let lines = results.flatMap(r => r.matches.map(match => ({ r, match })))
+					.sort((a, b) => (b.match.score || 0) - (a.match.score || 0))
+				for (let { r, match } of lines) {
+					items.push({
+						label: match.line_text.trim() || '(blank line)',
+						description: relativize(r.path, roots) + ':' + match.line_number,
+						iconPath: file_icon(r.path),
+						alwaysShow: true,
+						_action: { type: 'open', path: r.path, line: match.line_number },
+					})
 					if (items.length >= 2000)
 						break
 				}

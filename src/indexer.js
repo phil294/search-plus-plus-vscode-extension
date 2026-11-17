@@ -484,13 +484,24 @@ module.exports.Indexer = class {
 		sql += ' limit ?'
 		this._search_scan_count = 0
 		let rows = this.db.all(sql, [fts_query, limit])
+		let fetched = rows.length
+		// Complete matches first: the AND query's limit can be exhausted by scattered hits (e.g. long lines)
+		// before any line containing the whole phrase, so fetch the phrase separately and put it in front.
+		if (words.length > 1) {
+			let phrase_rows = this.db.all(sql, ['"' + words.join(' ').replace(/"/g, '""') + '"', limit])
+			if (phrase_rows.length) {
+				let seen = new Set(phrase_rows.map(r => r.path + '\n' + r.line_no))
+				rows = [...phrase_rows, ...rows.filter(r => ! seen.has(r.path + '\n' + r.line_no))]
+			}
+		}
 		this._search_path_ok = null
 		let scanned = this._search_scan_count
 		let t_query = Date.now()
-		/** @type {Map<string, {line_number:number, line_text:string}[]>} */
+		/** @type {Map<string, {line_number:number, line_text:string, score:number}[]>} */
 		let by_path = new Map()
 		let total_matches = 0
-		let has_more = false
+		let has_more = fetched >= limit
+		let seq_re = new RegExp(words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*'), case_sensitive ? '' : 'i')
 		for (let row of rows) {
 			let text = String(row.text)
 			if (! line_re.test(text))
@@ -501,14 +512,14 @@ module.exports.Indexer = class {
 				matches = []
 				by_path.set(file_path, matches)
 			}
-			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, plain_match_index(text, words_match, case_sensitive)) })
+			matches.push({ line_number: Number(row.line_no), line_text: line_preview(text, plain_match_index(text, words_match, case_sensitive)), score: line_score(text, words_match, seq_re, case_sensitive) })
 			total_matches++
 			if (total_matches >= limit) {
 				has_more = true
 				break
 			}
 		}
-		let results = [...by_path.entries()].map(([path, matches]) => ({ path, matches }))
+		let results = rank_files(by_path)
 		log_debug(`search_lines: ${Date.now() - start}ms (sql+fetch ${t_query - start}ms, filter+group ${Date.now() - t_query}ms), fetched ${rows.length} rows${has_path_filter ? ` (scanned ${scanned})` : ''} -> ${results.length} files, ${total_matches} matches | fts=${fts_query}`)
 		return { results, has_more }
 	}
@@ -635,6 +646,54 @@ function expand_glob(/** @type string */ token) {
 		// bare extension like ".js" -> match any file ending in it
 		globs.push('**/*' + token)
 	return globs
+}
+
+/** Relevance of a matching line for a plain query; `tier` = 3: the whole query as one run (optional
+ * whitespace between terms), 2: all terms in query order, 1: terms present in any order. Within a tier,
+ * a tighter span between the terms and a shorter line score higher. */
+function line_score(/** @type string */ text, /** @type string[] */ terms, /** @type RegExp */ seq_re, /** @type boolean */ case_sensitive) {
+	let hay = case_sensitive ? text : text.toLowerCase()
+	let tier = 1
+	let span = 0
+	if (seq_re.test(text))
+		tier = 3
+	else {
+		let pos = 0
+		let start = -1
+		for (let term of terms) {
+			let idx = hay.indexOf(term, pos)
+			if (idx === -1) {
+				start = -1
+				break
+			}
+			if (start === -1)
+				start = idx
+			pos = idx + term.length
+		}
+		if (start !== -1) {
+			tier = 2
+			span = pos - start
+		} else {
+			let firsts = terms.map(t => hay.indexOf(t))
+			span = Math.max(...firsts) - Math.min(...firsts)
+		}
+	}
+	return tier * 1e7 - Math.min(span, 9999) * 100 - Math.min(text.length, 9999)
+}
+
+/** Orders files by: best line tier, then how many lines hit that tier, then the best line's score, then
+ * how early in the file it appears. Matches within a file stay in line order. */
+function rank_files(/** @type {Map<string, {line_number:number, line_text:string, score:number}[]>} */ by_path) {
+	let ranked = [...by_path.entries()].map(([path, matches]) => {
+		matches.sort((a, b) => a.line_number - b.line_number)
+		let best = Math.max(...matches.map(m => m.score))
+		let best_tier = Math.ceil(best / 1e7) // penalties stay < 1e7, so this recovers the tier
+		let in_tier = matches.filter(m => Math.ceil(m.score / 1e7) === best_tier)
+		let first_line = Math.min(...in_tier.map(m => m.line_number))
+		return { path, matches, best, best_tier, n: in_tier.length, first_line }
+	})
+	ranked.sort((a, b) => b.best_tier - a.best_tier || b.n - a.n || b.best - a.best || a.first_line - b.first_line)
+	return ranked.map(({ path, matches }) => ({ path, matches }))
 }
 
 function relativize(/** @type string */ p, /** @type {string[]|undefined} */ roots) {

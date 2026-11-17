@@ -458,6 +458,12 @@
 						}
 					}
 					unify(root)
+					// results arrive relevance-ranked (fi = rank); a dir ranks as its best file
+					const set_rank = (node) => {
+						node.rank = Math.min(...node.files.map(f => f.fi), ...Object.values(node.dirs).map(set_rank))
+						return node.rank
+					}
+					set_rank(root)
 					return root
 				})
 
@@ -475,12 +481,17 @@
 						return rows
 					}
 					const walk = (node, depth) => {
-						for (const d of Object.values(node.dirs)) {
-							rows.push({ kind: 'dir', key: d.key, label: d.label, depth })
-							if (! dir_collapsed.value[d.key])
-								walk(d, depth + 1)
-						}
-						for (const f of node.files) {
+						const entries = [
+							...Object.values(node.dirs).map(d => ({ rank: d.rank, d })),
+							...node.files.map(f => ({ rank: f.fi, f })),
+						].sort((a, b) => a.rank - b.rank)
+						for (const { d, f } of entries) {
+							if (d) {
+								rows.push({ kind: 'dir', key: d.key, label: d.label, depth })
+								if (! dir_collapsed.value[d.key])
+									walk(d, depth + 1)
+								continue
+							}
 							rows.push({ kind: 'file', fi: f.fi, depth })
 							const file = results.value[f.fi]
 							if (! collapsed_files.value[file.path])

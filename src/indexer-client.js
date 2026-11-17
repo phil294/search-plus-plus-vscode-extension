@@ -135,9 +135,9 @@ class IndexerClient {
 	}
 
 	/** Substring search over the line index: matching lines with file path, line number and preview,
-	 * resolved entirely from the DB (no file reads). */
+	 * resolved entirely from the DB (no file reads). Files come ranked by relevance (see rank_files). */
 	search_lines(/** @type string */ word, /** @type number */ limit, /** @type {{include?:string[], exclude?:string[], roots?:string[], case_sensitive?:boolean}} */ filter = {}) {
-		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string}[]}[], has_more:boolean}>} */ (this.call('search_lines', word, limit, filter)) // eslint-disable-line no-extra-parens
+		return /** @type {Promise<{results:{path:string, matches:{line_number:number, line_text:string, score?:number}[]}[], has_more:boolean}>} */ (this.call('search_lines', word, limit, filter)) // eslint-disable-line no-extra-parens
 	}
 
 	/** Regex substring search: the pattern's mandatory literals drive an FTS prefilter, then each
